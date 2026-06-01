@@ -139,95 +139,133 @@ Sensor errors are non-fatal: a sensor in `ERROR` state is still polled each cycl
 
 ## Installation
 
+Deploying a station involves building a pre-configured SD card image on a Linux machine, flashing it, and completing Wi-Fi onboarding via a captive portal. No SSH access or manual file editing is required after flashing.
+
 ### Prerequisites
 
-- Raspberry Pi (tested on Pi Zero W 2 and Pi 4) with a microSD card (≥8 GB).
-- DietPi OS (v9.x or later) — see [dietpi.com](https://dietpi.com).
-- SSH key already installed on the Pi (run `bash scripts/setup_ssh_key.sh` once from your development machine).
+- Raspberry Pi Zero 2 W with a microSD card (≥8 GB).
+- A Linux build machine with `qemu-user-static`, `binfmt` support, and standard utilities (`losetup`, `parted`, `e2fsck`, `resize2fs`, `rsync`).
+- A Tailscale account with a reusable pre-auth key (generated from the [Tailscale admin console](https://login.tailscale.com/admin/settings/keys)).
+- SSH access to the UCLouvain VM and an admin InfluxDB token.
+- The PhenoHive repository cloned locally.
 
-### OS Setup (DietPi)
+### 1. Prepare the configuration files
 
-1. Download the latest DietPi image from [dietpi.com](https://dietpi.com/#downloadinfo).
-2. Flash it to a microSD card using [Balena Etcher](https://www.balena.io/etcher/).
-3. Before inserting the card, copy the files from [dietpi/](dietpi/) to the `bootfs` partition and configure Wi-Fi credentials in `dietpi-wifi.txt`.
-4. Insert the card, power on the Pi, and let the first-boot setup complete.
-5. Connect via SSH: `ssh root@<PI_IP>` (default password: `dietpi`).
+In the [dietpi/](dietpi/) directory, create three plain-text files (one value per file, no trailing whitespace):
 
-### Automated Deployment
+| File | Content |
+|------|---------|
+| `dietpi/phenohive_server.txt` | Tailscale IP of the UCLouvain VM (e.g. `100.117.27.12`) |
+| `dietpi/phenohive_token.txt` | InfluxDB write token *(gitignored — do not commit)* |
+| `dietpi/phenohive_station_id.txt` | Unique station identifier (e.g. `01`, `02`) |
 
-From your development machine (Windows or Linux), use the deploy script once the Pi is reachable over SSH:
+The build script reads these files and writes the values directly into `/opt/phenohive/.env` and `config.ini` inside the image.
+
+### 2. Build the image
+
+Download the latest DietPi ARMv8 image for Raspberry Pi Zero 2 W from [dietpi.com](https://dietpi.com) and place it in the `dietpi/` directory. Then run from the repository root:
 
 ```bash
-# One-time SSH key setup (generates ~/.ssh/phenohive_rpi and installs the public key)
+sudo ./dietpi/build_image.sh --tailscale-key tskey-auth-XXXXX
+```
+
+The script performs the following inside a chroot of the base image:
+1. Installs system packages: NetworkManager, comitup (captive-portal Wi-Fi onboarding), Tailscale, `python3-picamera2`, I²C tools, and Avahi.
+2. Enables `NetworkManager`, `comitup`, `avahi-daemon`, `tailscaled`, and `phenohive` as systemd services.
+3. Bakes the PhenoHive source tree into `/opt/phenohive/`, creates a Python virtual environment, and installs all dependencies.
+4. Writes `.env` (server IP and token) and `config.ini` (station ID) from the local configuration files.
+5. Embeds the Tailscale pre-auth key for automatic first-boot authentication.
+6. Enables I²C and the camera module via `config.txt` overlays and configures an unattended DietPi first boot.
+
+The output is `dietpi/phenohive.img`. Build time is 20–40 minutes depending on network speed and host CPU.
+
+### 3. Flash the image
+
+Flash `dietpi/phenohive.img` to the microSD card. On Windows, use [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or [Balena Etcher](https://www.balena.io/etcher/). On Linux:
+
+```bash
+dd if=dietpi/phenohive.img of=/dev/sdX bs=4M status=progress
+```
+
+Insert the card into the Raspberry Pi and power it on. No further SD card preparation is needed.
+
+### 4. Wi-Fi setup via comitup
+
+No Wi-Fi credentials are stored in the image; the comitup service handles onboarding on first boot:
+
+1. Power on the station. After ~30 seconds a Wi-Fi hotspot named `comitup-XXXX` appears.
+2. On a phone or laptop, connect to that hotspot. A captive portal opens automatically (or navigate to `http://comitup.local`).
+3. Select the target Wi-Fi network, enter the password, and confirm. The hotspot disappears and the station joins the network.
+4. The station reboots automatically. On the second boot it authenticates to Tailscale and the PhenoHive service starts.
+
+If the station later cannot find its saved network, comitup automatically re-broadcasts the hotspot — repeat steps 2–3 to reconfigure.
+
+### 5. Verify the service
+
+Once on the network, confirm the service is running via SSH (the Pi's Tailscale IP is visible in the [Tailscale admin console](https://login.tailscale.com/admin/machines)):
+
+```bash
+ssh root@<PI_TAILSCALE_IP>
+systemctl status phenohive
+journalctl -u phenohive -n 60 --no-pager
+```
+
+The log should show sensor initialisation messages (`SHT35 OK`, `TCS3448 OK`, etc.), an NTP sync confirmation, and `Collection cycle started` / `Publishing aggregate record` lines after the first intervals.
+
+If a sensor fails to initialise, the service continues and retries on every poll cycle. If the service cannot reach the server, check:
+- `tailscale status` — both the VM and the station should appear as connected.
+- `/opt/phenohive/.env` — verify `INFLUX_URL` and `INFLUX_TOKEN` were applied correctly.
+
+### 6. Scale and camera calibration
+
+Open the debug dashboard from any device on the same Tailscale network:
+
+```
+http://<PI_TAILSCALE_IP>:8080
+```
+
+Navigate to the **Calibration** tab:
+
+**Scale:**
+1. Leave the scale empty and click *Confirm: Scale is empty* to set the tare.
+2. Place an object of known mass, enter its weight in grams, and click *Calibrate*.
+3. Optionally add an offset to account for the pot's weight.
+
+**Camera:**
+1. Position the station in its final location without the plant in frame, then click *Capture background*.
+2. Measure a reference object in the captured image, enter its real-world size in cm and its pixel size, and click *Calibrate*. The computed scale factor is written to `config.ini` and applied to all subsequent recordings.
+
+### 7. Verify data on Grafana
+
+Within a few minutes of the first data push, the auto-provisioning service on the VM detects the new `station_id` in InfluxDB and automatically creates a Grafana team, a student user account (`studentXX` / `phenohive_XX`), and a per-station dashboard cloned from the master template.
+
+Log in to Grafana at `http://100.117.27.12:3000` as admin and confirm the new dashboard appears.
+
+### Optional: server-side infrastructure setup
+
+If the backend stack is not yet running (e.g. for a new course edition):
+
+1. SSH into the VM and clone the repository.
+2. Copy `.env.example` to `.env` and set `INFLUXDB_INIT_ADMIN_TOKEN`, `GRAFANA_ADMIN_PASSWORD`, and `INFLUXDB_INIT_PASSWORD`.
+3. Start the Docker stack: `docker compose up -d`
+4. Create a scoped InfluxDB write token (append-only to the `phenohive` bucket) via the InfluxDB web UI at port 8086 (accessible locally on the VM). This token goes into `dietpi/phenohive_token.txt` for each station.
+5. Start the auto-provisioning service: `python scripts/auto_provision_grafana.py` (register as a systemd unit for persistence).
+6. Install Tailscale on the VM and join the PhenoHive tailnet: `tailscale up --auth-key=<TSKEY-AUTH-...>`
+
+### Day-to-day development updates
+
+For pushing code changes to an already-deployed station from your dev machine:
+
+```bash
+# One-time SSH key setup
 bash scripts/setup_ssh_key.sh
 
-# Full deployment: apt deps, venv, systemd service setup, and code push
-bash scripts/deploy_to_pi.sh
-
-# Day-to-day: push only files changed since last commit
+# Push only files changed since last commit (auto-restarts service if .py/.html changed)
 bash scripts/push_to_pi.sh
 
-# Push entire project tree (after a large refactor)
+# Push entire project tree
 bash scripts/push_to_pi.sh --all
 ```
-
-The station is deployed to `/opt/phenohive/` and runs as the `phenohive.service` systemd unit. The service starts automatically at boot and restarts on failure.
-
-After deployment, create `/opt/phenohive/.env` on the Pi with at least the InfluxDB credentials:
-
-```ini
-INFLUXDB_TOKEN=<your_write_token>
-INFLUX_URL=http://100.117.27.12:8081
-INFLUXDB_ORG=phenohive
-INFLUXDB_BUCKET=phenohive
-```
-
-### Manual Setup
-
-1. Ensure the Pi is connected to the internet: `ping google.com`.
-2. Clone the repository: `git clone https://github.com/amontariol/Phenohive_2025-26.git /opt/phenohive`.
-3. Navigate to the project folder: `cd /opt/phenohive`.
-4. Install system dependencies:
-   ```bash
-   apt-get update && apt-get install -y \
-     python3 python3-pip python3-venv \
-     python3-smbus python3-rpi.gpio \
-     libopenblas-dev libatlas-base-dev \
-     ffmpeg python3-libcamera python3-picamera2 \
-     build-essential cmake gfortran pkg-config git
-   ```
-5. Create and activate a virtual environment:
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
-   ```
-6. Copy and edit the configuration file:
-   ```bash
-   cp config.defaults.ini config.ini
-   nano config.ini
-   ```
-7. Install and enable the systemd service:
-   ```bash
-   cp infrastructure/systemd/phenohive.service /lib/systemd/system/
-   systemctl daemon-reload
-   systemctl enable phenohive.service
-   systemctl start phenohive.service
-   ```
-8. Check the service status: `systemctl status phenohive` or `journalctl -u phenohive -n 50`.
-
-### SSH Connection
-
-1. Find your machine's IP using `ipconfig /all` (Windows) or `ip a` (Linux/macOS).
-2. Scan the local network for the Pi:
-   ```bash
-   nmap -sn <YOUR_IP_RANGE>
-   ```
-   The Pi appears in the list with "Raspberry Pi Foundation" next to its MAC address.
-3. Connect: `ssh root@<PI_IP>`. Default password: `dietpi`.
-4. Close the session with `exit`.
-
-For passwordless SSH from your dev machine, run `bash scripts/setup_ssh_key.sh` once.
 
 ## Development (Mock Mode)
 
