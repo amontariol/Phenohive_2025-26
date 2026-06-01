@@ -1,0 +1,80 @@
+\documentclass{EPL-master-thesis-covers-EN}
+
+\usepackage{hyperref}
+\usepackage{setspace}
+\usepackage[table]{xcolor}
+\usepackage{tikz}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{positioning,arrows.meta,calc,shapes,fit}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\usepackage{csquotes}
+\usepackage[style=apa,backend=biber]{biblatex}
+\addbibresource{references.bib}
+
+\geometry{margin=2.8cm}
+\onehalfspacing
+
+% Metadata for the title page
+\title{PhenoHive}
+\subtitle{An intuitive, modular and low-cost phenotyping station}
+\author{Adrien \textsc{Montariol}}
+\degreetitle{Master [120] in Computer Science}
+\supervisor{Cristel \textsc{Pelsser}}
+\secondsupervisor{Laurent \textsc{Francis}}
+\readerone{Xavier \textsc{Draye}}
+\readertwo{Sebastien \textsc{Toussaint}}
+\years{2025--2026}
+
+\begin{document}
+
+\maketitle
+\restoregeometry
+
+\pagenumbering{roman}
+
+\input{abstract}
+\input{acknowledgements}
+
+\tableofcontents
+\listoffigures
+\listoftables
+
+\input{abbreviations}
+
+\clearpage
+\pagenumbering{arabic}
+
+% ── Main chapters ──────────────────────────────────────────────────────────────
+\input{ch01_introduction}
+\input{ch02_state_of_art}
+\input{ch03_requirements}
+\input{ch04_architecture}
+\input{ch05_data_acquisition}
+\input{ch06_storage}
+\input{ch07_deployment}
+\input{ch08_evaluation}
+\input{ch09_discussion}
+\input{ch10_conclusion}
+
+% ── Appendices ─────────────────────────────────────────────────────────────────
+\appendix
+\input{app01_technical}
+\input{app02_bom}
+\input{app03_repository}
+\input{app04_quickstart}
+\input{app05_ai}
+
+\printbibliography[heading=bibintoc, title={References}]
+
+\backcoverpage
+\end{document}

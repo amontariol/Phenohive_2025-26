@@ -1,0 +1,241 @@
+﻿\chapter{Deployment and operations}
+\label{ch:deployment}
+
+Getting a prototype working is different from getting it deployed at classroom scale. A student with no command-line experience or deep computer knowledge needs to be able to reach a live dashboard within minutes. Also, a TA needs to be able to add a station without needing to interact with the backend. On top of that, twenty stations must push to a shared server without interfering with each other. This chapter describes the deployment architecture that addresses each of these.
+
+\section{Network topology and security architecture}
+
+Each PhenoHive station must push data to the UCLouvain server from wherever a student happens to live, through whatever network is available. The main constraint is that the university VPN requires specific certificates that are difficult to manage in an automated setting. The WireGuard-based overlay and server-side security model described in this section address this.
+
+\subsection{Overlay network rationale}
+
+The UCLouvain VPN \parencite{UCLouvainVPN} isn't designed for devices such as this one because it relies on certificate-based authentication which makes it unsuitable for a fleet of Raspberry Pis that need to be able to connect to it without user interaction. They are also difficult to manage at scale. Another reason is that the University's VPN policy is that it's reserved for university and research staff only. What this means is that even if the technical barriers were overcome, it would not be in accordance with the university's acceptable use policy for students to connect their home devices to the VPN.
+
+To bypass these limitations, this iteration of the PhenoHive project uses Tailscale, a WireGuard-based overlay mesh network \parencite{donenfeld2017wireguard, tailscale}. Tailscale authenticates via pre-provisioned keys, so the Raspberry Pi that runs it has it as a native \texttt{systemd} service called (\texttt{tailscaled}) that reconnects silently on boot without any user interaction. It also uses NAT traversal to go through home routers and establish direct peer-to-peer tunnels (Figure~\ref{fig:network-topology}). While Tailscale is used as the proof-of-concept coordination server due to its ease of setup, the architecture is fully compatible with Headscale which is an open-source, self-hosted alternative for long-term, cost-free production deployment that relies on the same underlying technology \parencite{headscale}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm and 2.5cm,
+    block/.style={draw, rounded corners, align=center, text width=3.2cm, minimum height=1cm, fill=white, font=\footnotesize},
+    arrow/.style={<->, thick}
+]
+\node[block, fill=blue!10] (vm) {School VM (Ubuntu)\\IP: \texttt{100.a.b.c}};
+\node[block, fill=green!10, below left=2cm and 1.5cm of vm] (rpi) {Raspberry Pi\\IP: \texttt{100.x.y.z}};
+\node[block, fill=purple!10, below right=2cm and 1.5cm of vm] (laptop) {User Laptop\\IP: \texttt{100.h.j.k}};
+
+\draw[arrow] (rpi) -- (vm) node[midway, left, font=\scriptsize, align=center, xshift=-0.2cm] {Encrypted\\WireGuard Tunnel};
+\draw[arrow] (laptop) -- (vm) node[midway, right, font=\scriptsize, align=center, xshift=0.2cm] {Encrypted\\WireGuard Tunnel};
+
+\node[draw, dashed, inner sep=0.6cm, fit=(vm) (rpi) (laptop), label={[font=\bfseries]above:Tailscale Secure Overlay Network (100.64.0.0/10)}] (tailscale) {};
+
+\end{tikzpicture}
+\caption[PhenoHive Overlay Network Topology]{The PhenoHive overlay network topology. Tailscale establishes a secure WireGuard-based mesh that connects edge devices together with the central VM and user laptops across restrictive networks.}
+\label{fig:network-topology}
+\end{figure}
+
+\subsection{Virtual machine security and port isolation}
+
+There are three independent layers that protect the central hub VM. First, the UCLouvain firewall filters inbound traffic to the VM's public interface. Then, a host-level UFW ruleset denies by default. And third, Docker port bindings that determine which services are reachable at all.
+
+\paragraph{Public ingress and network-level security}
+The UCLouvain's perimeter firewall filters any inbound traffic to the VM's public interface. While port 22 (Secure Shell, SSH) stays open to the internet for remote administration, it's hardened at the OS level and since password authentication is off, this means that only public keys can get in. There is also a \texttt{fail2ban} service that runs at the same time and it blocks any IPs that look like they may be trying to execute a  brute-force attack. The final defense is that operational ports like 3000 (Grafana) and 8081 (Nginx Ingest Proxy) are blocked outright by the university's outer firewall for anything off campus.
+
+In order to not rely solely on the university firewall alone, the VM also runs its own host-level firewall, \texttt{UFW} (Uncomplicated Firewall), set to deny by default. It explicitly permits SSH on the public interface and pushes container traffic through the Tailscale adapter (\texttt{tailscale0}).
+
+\paragraph{Docker network isolation and loopback bindings}
+Inside the host OS, Docker's port socket bindings keep each service walled off from one another.
+
+\begin{verbatim}
+services:
+  influxdb:
+    ports:
+      - "127.0.0.1:8086:8086" # Bound strictly to VM localhost
+
+  influx_write_proxy:
+    ports:
+      - "0.0.0.0:8081:8081"   # Open to local interfaces (secured by Tailscale)
+
+  grafana:
+    ports:
+      - "0.0.0.0:3000:3000"   # Open to local interfaces (secured by Tailscale)
+\end{verbatim}
+
+Binding the InfluxDB socket to the loopback interface (\texttt{127.0.0.1}) keeps the database off every external network adapter, the Tailscale overlay interface included. A direct external query to port 8086 is dropped at the host kernel. The only ways in are local sockets, such as administrative CLI commands, or the Nginx write proxy, which runs in a different container on the same host network bridge.
+
+The Nginx write proxy and Grafana are bound to \texttt{0.0.0.0} inside the VM so they can get packets off the overlay. Both of the firewalls still drop public traffic to ports 3000 and 8081 in such a way that only devices that are authenticated on the Tailscale network can reach those interfaces.
+
+\subsection{Edge security and gateway proxy}
+
+By letting a field-deployed device talk straight to the database could create a real risk. If someone physically tampers with a Raspberry Pi, they could pull the database credentials off it and gain full read, write, and delete rights.
+
+In an effort to contain that risk, the Nginx Write Proxy sits on port 8081 and acts as a secure API gateway. It normalises the request formats and only accepts \texttt{POST} requests to \texttt{/api/v2/write} or \texttt{/api/v2/query}. Everything else gets a 403 Forbidden error and is therefore rejected.
+
+\begin{verbatim}
+# Nginx write-proxy excerpt (simplified)
+location /api/v2/write {
+    proxy_pass http://influxdb:8086;
+}
+location /api/v2/query {
+    proxy_pass http://influxdb:8086;
+}
+location / {
+    return 403;
+}
+\end{verbatim}
+
+So even with a compromised edge token the malicious user can only either append data reads to the \texttt{phenohive} bucket or perform queries. It cannot reach InfluxDB's administrative and management APIs and cannot reconfigure the server. 
+
+\subsection{From sensor to Grafana: the journey of a packet}
+
+Figure~\ref{fig:sensor-to-grafana-path} traces the complete journey of a single packet. Sensor data is formatted into InfluxDB Line Protocol on the RPi, encrypted by WireGuard through the Tailscale overlay, proxied by Nginx into InfluxDB, and finally queried by Grafana for visualization.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    node distance=0.45cm and 0.55cm,
+    device/.style={draw, thick, rounded corners=4pt, align=center,
+        text width=2.3cm, minimum height=1.0cm, font=\footnotesize},
+    proc/.style={draw, rounded corners=2pt, align=center,
+        text width=2.6cm, minimum height=0.75cm, font=\scriptsize, fill=white},
+    arrow/.style={-{Latex[length=2.3mm]}, thick},
+    netarrow/.style={-{Latex[length=2.3mm]}, thick, blue!55, dashed}
+]
+
+% ---- Edge device ----
+\node[device, fill=green!8] (rpi) {Raspberry Pi\\(edge node)};
+\node[proc, fill=blue!5, below=0.4cm of rpi] (sense)
+    {I$^2$C sensor read\\+ quality pipeline};
+\node[proc, fill=blue!5, below=0.4cm of sense] (lp)
+    {Line Protocol format\\\texttt{station\_id=01 t=22.9}};
+\node[proc, fill=blue!5, below=0.4cm of lp] (tsenc)
+    {Tailscale encap.\\(ChaCha20-Poly1305 / UDP)};
+
+\node[draw=green!40, dashed, rounded corners=5pt, inner sep=7pt,
+    fit=(rpi)(sense)(lp)(tsenc),
+    label={[font=\scriptsize, green!55!black, xshift=0.4cm]above:Edge device (student home)}] {};
+
+% ---- Network cloud ----
+\node[draw, ellipse, align=center, font=\scriptsize, fill=gray!5,
+    minimum width=2.0cm, minimum height=1.3cm,
+    right=1.7cm of lp] (cloud)
+    {Home network\\+ internet};
+
+% ---- VM / hub ----
+\node[device, fill=orange!8, right=1.7cm of cloud] (vm) {UCLouvain VM\\(hub server)};
+\node[proc, fill=orange!5, below=0.4cm of vm] (tsdec)
+    {Tailscale decap.\\(\texttt{tailscale0} adapter)};
+\node[proc, fill=orange!5, below=0.4cm of tsdec] (nginx)
+    {Nginx write proxy\\(port 8081 $\to$ 8086)};
+\node[proc, fill=orange!5, below=0.4cm of nginx] (idb)
+    {InfluxDB commit\\(scoped write token)};
+
+\node[draw=orange!40, dashed, rounded corners=5pt, inner sep=7pt,
+    fit=(vm)(tsdec)(nginx)(idb),
+    label={[font=\scriptsize, orange!55!black, xshift=0.4cm]above:UCLouvain server}] {};
+
+% ---- Grafana ----
+\node[device, fill=purple!8, right=1.7cm of idb] (grafana)
+    {Grafana\\dashboard};
+
+% Edge arrows
+\draw[arrow] (rpi) -- (sense);
+\draw[arrow] (sense) -- (lp);
+\draw[arrow] (lp) -- (tsenc);
+
+% Network traversal
+\draw[netarrow] (tsenc.east) to[out=0, in=220] (cloud.south);
+\draw[netarrow] (cloud.north) to[out=40, in=180] (tsdec.west);
+
+% VM arrows
+\draw[arrow] (vm) -- (tsdec);
+\draw[arrow] (tsdec) -- (nginx);
+\draw[arrow] (nginx) -- (idb);
+
+% Final arrow to Grafana
+\draw[arrow] (idb.east) -- (grafana.west);
+\end{tikzpicture}
+}
+\caption[Secure Data Path from Sensor to Grafana]{The complete path of a single telemetry packet from sensor read to dashboard. The edge device formats data as InfluxDB Line Protocol, encrypts it via Tailscale (WireGuard / ChaCha20-Poly1305), and transmits it over any available internet connection. On the server side, the Nginx write proxy restricts incoming requests to append-only writes before forwarding to InfluxDB, preventing a compromised edge token from reaching administrative endpoints. The grafana dashboard finally queries the database for visualization, completing the data journey.}
+\label{fig:sensor-to-grafana-path}
+\end{figure}
+
+\section{Station bootstrapping and systemd sequencing}
+
+Each station is identified by a unique \texttt{station\_id} string, set in its local \texttt{config.ini} file. This identifier is attached as a tag to every InfluxDB measurement and establishes the foundation for all downstream data isolation.
+
+\begin{verbatim}
+[general]
+station_id = 01
+
+[influxdb]
+enabled = True
+url = http://<SERVER_IP>:8081
+token = phenohive-local-dev-token
+org = uclouvain
+bucket = phenohive
+\end{verbatim}
+
+The station identity is deliberately kept minimal: a two-digit string is enough for classroom-scale deployments, and adding a new station requires only flashing the image, setting a unique \texttt{station\_id} and the server ip in \texttt{config.ini}, and starting the service.
+
+To ensure the station boots reliably without any command-line work, the main Python runtime is controlled by a \textbf{systemd service} with a network pre-check (as illustrated in Figure~\ref{fig:boot-chain}). The service unit blocks runtime execution until the network and clock are ready:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=0.6cm,
+    block/.style={draw, rounded corners, align=center, text width=5.5cm, minimum height=0.8cm, fill=white, font=\footnotesize},
+    arrow/.style={-{Latex[length=2mm]}, thick}
+]
+\node[block, fill=blue!8] (boot) {Power on / systemd starts};
+\node[block, fill=orange!8, below=of boot] (net) {\texttt{wait\_for\_network.sh}\\(ping + NTP sync, 60\,s timeout)};
+\node[block, fill=yellow!8, below=of net] (cfg) {\texttt{update\_config.sh}\\(patch \texttt{.env} from \texttt{/boot/} files)};
+\node[block, fill=green!8, below=of cfg] (main) {\texttt{main.py}\\(sensor init, debug UI, acquisition loop)};
+\node[block, fill=gray!8, below=of main] (data) {Data flows to InfluxDB / Grafana};
+
+\draw[arrow] (boot) -- (net);
+\draw[arrow] (net) -- (cfg);
+\draw[arrow] (cfg) -- (main);
+\draw[arrow] (main) -- (data);
+\end{tikzpicture}
+\caption[Systemd Boot Chain]{The systemd boot chain from power-on to live data acquisition. Two \texttt{ExecStartPre} directives sequence the pre-start steps. First the network and clock are confirmed as being ready, then the runtime configuration is patched from the boot partition.}
+\label{fig:boot-chain}
+\end{figure}
+
+\begin{verbatim}
+# systemd service pre-start sequencing
+[Service]
+ExecStartPre=/bin/bash /opt/phenohive/scripts/wait_for_network.sh
+ExecStartPre=/bin/bash /opt/phenohive/scripts/update_config.sh
+ExecStart=/opt/phenohive/.venv/bin/python main.py
+\end{verbatim}
+
+The first pre-start script, \texttt{wait\_for\_network.sh}, executes a loop that blocks service start until an internet connectivity is confirmed via a ping to \texttt{8.8.8.8} and until NTP clock synchronization is completed. This makes sure that all data points carry exact UTC timestamps.
+
+The second and final pre-start script, \texttt{update\_config.sh}, checks the \texttt{/boot} partition for two optional plain-text files: \texttt{phenohive\_server.txt} (containing the hub's IP address) and \texttt{phenohive\_token.txt} (containing the InfluxDB write token). If either file is present, then the script sets the corresponding values into \texttt{/opt/phenohive/.env} before the main runtime starts. Because of the fact that the \texttt{/boot} partition is accessible from any operating system without needing specific mounting tools, a TA can pre-configure a bunch of stations just by writing these files to the SD card from any computer. On first boot, each station is then able to self-configures its server target and token without requiring any SSH access or manual edits to hidden Linux system files.
+
+\section{Auto-provisioning service}
+
+Creating teams, users, dashboards and permissions by hand for each new station is error-prone and time-consuming. The server includes an \textbf{auto-provisioning service} (\texttt{auto\_provision\_grafana.py}) that detects new station identifiers in InfluxDB and provisions the Grafana resources automatically.
+
+The service executes a continuous loop with a 60-second cycle:
+\begin{enumerate}
+    \item \textbf{Discovery}. It queries InfluxDB using a Flux query to find any and all distinct \texttt{station\_id} tags that are currently present in the database.
+    \item \textbf{Provisioning}. For each discovered station ID that does not yet have a corresponding Grafana dashboard associated, the service automatically:
+    \begin{itemize}
+        \item Creates a new Grafana team (\texttt{phenohive\_station\_XX}).
+        \item Creates a student user account called (\texttt{studentXX}) with an initial password that's derived from the station ID.
+        \item Clones the master dashboard template and injects the station-specific query filters into it.
+        \item Configures folder and dashboard permissions for the new team.
+    \end{itemize}
+    \item \textbf{Synchronization}. It finally runs the full access-control sync so that any manual changes that the admin made to Grafana are reapplied.
+\end{enumerate}
+
+Deploying a new station takes no interaction with Grafana at all. The TA only needs to edit the station's \texttt{config.ini} and starts the service. Within two minutes of the first data push, the auto-provisioning service sees the new station ID in InfluxDB, builds every Grafana resource it needs and the student can then log in.
+
+\subsection{Dynamic station ID reassignment logistics}
+
+In the event of a problem, moving a station from one group to another comes down to a single \texttt{station\_id} change in \texttt{config.ini}. The auto-provisioning service picks up the new ID and builds the new student environment, while the old dashboard keeps its history, and again nobody has to touch Grafana. This can also be done using the debug UI if logged in as admin but it doesn't allow to change the station ID to an existing one.
+
+

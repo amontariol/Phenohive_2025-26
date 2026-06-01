@@ -1,0 +1,131 @@
+{
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "11.0.0"
+    },
+    {
+      "type": "panel",
+      "id": "stat",
+      "name": "Stat",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "table",
+      "name": "Table",
+      "version": ""
+    },
+    {
+      "type": "datasource",
+      "id": "influxdb",
+      "name": "InfluxDB",
+      "version": "2.7+"
+    }
+  ],
+  "title": "PhenoHive Admin Panel",
+  "uid": "phenohive-admin",
+  "editable": true,
+  "style": "dark",
+  "tags": [
+    "admin",
+    "phenohive"
+  ],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "type": "stat",
+      "title": "System Status Overview",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-phenohive"
+      },
+      "targets": [
+        {
+          "query": "import \"experimental\"\nthreshold = experimental.addDuration(d: -10m, to: now())\nfrom(bucket: \"phenohive\")\n  |> range(start: -1h)\n  |> filter(fn: (r) => r._measurement == \"phenohive_measurements\")\n  |> filter(fn: (r) => r._field == \"sht35_air_temperature_c\")\n  |> group(columns: [\"station_id\"])\n  |> last()\n  |> map(fn: (r) => ({\n      _time: r._time,\n      _value: if r._time > threshold then 1.0 else 0.0,\n      station_id: r.station_id\n    }))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "displayName": "Station ${__field.labels.station_id}",
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "ACTIVE",
+                  "color": "green"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 3,
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "type": "table",
+      "title": "Recent Data Captures",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-phenohive"
+      },
+      "targets": [
+        {
+          "query": "from(bucket: \"phenohive\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"phenohive_measurements\")\n  |> filter(fn: (r) => r._field == \"sht35_air_temperature_c\" or r._field == \"sht35_air_humidity_pct\" or r._field == \"scale_hx711_weight_g\" or r._field == \"tcs3448_lux\")\n  |> keep(columns: [\"_time\", \"_field\", \"_value\", \"station_id\"])\n  |> group()\n  |> pivot(rowKey:[\"_time\", \"station_id\"], columnKey:[\"_field\"], valueColumn:\"_value\")\n  |> sort(columns:[\"_time\"], desc:true)\n  |> limit(n: 100)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}

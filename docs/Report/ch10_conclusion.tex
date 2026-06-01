@@ -1,0 +1,36 @@
+﻿\chapter{Conclusion}
+\label{ch:conclusion}
+
+\begingroup
+\setlength{\parskip}{0.6em}
+
+The approach this thesis took was not a rebuild from scratch, but more a careful look at what the platform was actually doing, and an effort to improve or correct what was not working. The work was organized around three objectives. These were defined as architectural clarity, sensing quality, and deployment resilience. The previous iterations had established what the concept is and the hardware choices are. What was left to do was consolidating them into a platform that could be trusted in uncontrolled environments by students who should not need to think about the measurement system and the quality of the data. Two components are explicitly carried over from the previous theses and weren't reevaluated here. These are the PlantCV vision pipeline and HX711 mass-channel calibration from \textcite{colinet2025} and the DietPi deployment model from \textcite{goffinet2024}.
+
+\section*{Original contributions}
+\addcontentsline{toc}{section}{Original contributions}
+
+The three objectives decompose into eight specific contributions, each of which was absent from both preceding PhenoHive theses:
+
+\begin{enumerate}
+    \item \textbf{Modular software architecture.} Refactoring the codebase from a simple monolithic script into an easily maintainable codebase with four Python source packages (\texttt{core}, \texttt{sensors}, \texttt{ui}, and \texttt{vision}) under \texttt{src/}, with a \texttt{scripts/} directory of operational helpers, and a factory-based sensor abstraction (\texttt{BaseSensor}) that allows for new hardware to be added without needing to modify the acquisition loop.
+
+    \item \textbf{SHT35 metrological calibration.} A four-point corner sweep against the WELCOME lab's Espec SH-242 climatic chamber, which produced traceable linear corrections ($+0.14\,^\circ$C, $-1.53\,\%$\,RH) which were applied to every reading in the platform, allowing the student to trust the numbers and recieve precise measurements that will allow them to reason more carefully about the environmental conditions.
+
+    \item \textbf{TCS3448 spectral calibration and channel mapping.} A full 300--940\,nm monochromator sweep with two diffraction gratings, which exposed a systematic shift of roughly 25\,nm across the visible channels and fixed per-channel dark offsets and irradiance scale factors (counts to mW/m$^2$). The empirical mapping it produced replaces the nominal values that were provided by the datasheet everywhere in the platform. This means the student can now read the spectral data in physical units, and reason about the light environment in terms of photosynthetically active radiation instead of raw counts. It means they can also trust the readings provided by the platform and be able to more easily figure out what affects their plant's growth.
+
+    \item \textbf{Local-first persistence with offline replay.} A CSV-first append model keeps the authoritative archive independent of network availability. So it being paired with a JSONL offline queue that buffers records and replays them to InfluxDB on reconnection is a robust solution. A deliberate 48-hour disconnection test confirmed it. Students can therefore truly trust that their data is being recorded even when the network drops and that it will still be there when they come back.
+
+    \item \textbf{Headless Wi-Fi onboarding.} Integration of the Comitup captive-portal service which lets a student set up the network on first boot with no command line at all. It allows for power-on to live data on Grafana that was measured in at under five minutes. A student gets the station online and running without needing to ask for help or to know anything about system configuration.
+
+    \item \textbf{Tailscale overlay network and Nginx write proxy.} An encrypted peer-to-peer VPN in place of the certificate model, together with a restrictive write-only proxy that stops a compromised edge token from ever reaching InfluxDB's administrative endpoints. This secures the network without needing to manage certificates, and allows the station to be deployed on any network that allows outbound VPN connections, without needing to ask for permission or have prior knowledge in networking.
+
+    \item \textbf{Auto-provisioning service.} Continuous InfluxDB polling that picks up new \texttt{station\_id} values and builds isolated Grafana teams, dashboards, and student accounts on its own, cutting per-station setup to zero Grafana interaction. Adding a station to the deployment no longer means working through tedious configuration tasks.
+
+    \item \textbf{Two-stage MAD signal-processing pipeline.} Burst-level and cross-collection Median Absolute Deviation filtering, with explicit quality metadata (\texttt{low\_confidence}, coefficient of variation, success ratio) attached to every published record. This means that the student can filter out bad data with confidence, and that they can understand why a particular reading is flagged as low-confidence.
+\end{enumerate}
+
+On physical hardware, the evaluation chapter answered the engineering half of the research question. A student can take a freshly-imaged Raspberry Pi, bring it online through the Comitup captive portal, and reach calibrated multi-sensor data on a private Grafana dashboard in under five minutes, never touching a command line. The pedagogical half is the part this thesis cannot answer yet. Whether students will really be able to use the data to reason more carefully about stomatal conductance, phytochrome signalling or water balance. Only a real deployment will reveal the answer, and the platform is now in a state where that's possible. The sensor suite is metrologically validated, the network holds up, provisioning is fully automated, and the station recovers from the disconnections and surprise reboots that are routine in a home. Together, these move PhenoHive from a prototype to a fully fledged system that can be deployed. 
+
+
+\endgroup
+

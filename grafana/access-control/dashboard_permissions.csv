@@ -1,0 +1,10 @@
+dashboard_uid,team_name,permission
+phenohive-station-01,phenohive_station_01,View
+phenohive-station-01,phenohive_assistants,Edit
+phenohive-station-02,phenohive_station_02,View
+phenohive-station-02,phenohive_assistants,Edit
+phenohive-admin,phenohive_assistants,Edit
+phenohive-station-04,phenohive_station_04,View
+phenohive-station-04,phenohive_assistants,Edit
+phenohive-station-03,phenohive_station_03,View
+phenohive-station-03,phenohive_assistants,Edit

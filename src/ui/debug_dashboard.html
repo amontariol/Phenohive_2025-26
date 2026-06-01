@@ -1,0 +1,1587 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PhenoHive Station</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+    .navbar { display: flex; gap: 8px; margin-bottom: 16px; }
+    .nav-btn { margin-top: 0; background: #1e293b; color: #e2e8f0; }
+    .nav-btn.active { background: #22c55e; color: #052e16; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .card { background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 14px; margin-bottom: 16px; }
+    h1 { margin-top: 0; }
+    pre { margin: 0; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    select,
+    label { display: block; margin-top: 8px; }
+    input,
+    select { width: 100%; padding: 8px; border-radius: 8px; border: 1px solid #475569; background: #0b1220; color: #e2e8f0; }
+    button { margin-top: 12px; padding: 10px 14px; border: 0; border-radius: 8px; background: #22c55e; color: #052e16; font-weight: 600; cursor: pointer; }
+    .muted { color: #94a3b8; font-size: 0.9rem; }
+    .settings-list { display: grid; gap: 10px; }
+    .setting-item { border: 1px solid #334155; border-radius: 10px; padding: 10px; background: #0b1220; }
+    .setting-key { font-weight: 600; margin-bottom: 8px; }
+    .setting-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .setting-controls input { width: auto; min-width: 180px; flex: 1 1 220px; }
+    .toggle-group { display: flex; flex-wrap: wrap; gap: 6px; }
+    .toggle-btn { margin-top: 0; padding: 7px 10px; border: 1px solid #475569; border-radius: 7px; background: #111827; color: #e2e8f0; }
+    .toggle-btn.active { background: #22c55e; color: #052e16; border-color: #22c55e; }
+    .save-btn { margin-top: 0; }
+    
+    /* Wizard Styles */
+    .wizard-container { display: flex; flex-direction: column; gap: 20px; }
+    .wizard-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .wizard-step { display: none; flex-direction: column; gap: 15px; animation: fadeIn 0.3s ease; }
+    .wizard-step.active { display: flex; }
+    .wizard-footer { display: flex; justify-content: space-between; margin-top: 20px; border-top: 1px solid #334155; padding-top: 20px; }
+    .stepper { display: flex; gap: 8px; margin-bottom: 20px; }
+    .step-dot { width: 10px; height: 10px; border-radius: 50%; background: #334155; }
+    .step-dot.active { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    .sensor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+    .sensor-select-card { background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 24px; text-align: center; cursor: pointer; transition: all 0.2s ease; }
+    .sensor-select-card:hover { border-color: #22c55e; transform: translateY(-4px); background: #1e293b; }
+    .sensor-icon { font-size: 2.5rem; margin-bottom: 12px; display: block; }
+    
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+    #btn-restart-service {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 1000;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+      display: none; /* Hidden by default, shown when settings tab is active */
+      margin: 0;
+      padding: 14px 24px;
+      background: #ef4444;
+      color: white;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 9999px; /* Pill shape */
+      font-size: 0.95rem;
+      transition: all 0.2s ease;
+    }
+    #btn-restart-service:hover {
+      background: #dc2626;
+      transform: scale(1.05);
+    }
+    #btn-restart-service:active {
+      transform: scale(0.95);
+    }
+
+    #pending-changes-container {
+      position: fixed;
+      bottom: 96px; /* Above the pill button */
+      right: 24px;
+      z-index: 1000;
+      background: #1f2937;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      width: 260px;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+      animation: fadeIn 0.3s ease;
+    }
+    .pending-header {
+      background: #374151;
+      padding: 8px 12px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #9ca3af;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #pending-changes-list {
+      list-style: none;
+      margin: 0;
+      padding: 8px 0;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .pending-item {
+      padding: 6px 12px;
+      font-size: 0.85rem;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .pending-item:last-child { border-bottom: none; }
+    .pending-key { color: #f3f4f6; font-family: monospace; font-size: 0.8rem; }
+    .pending-val { color: #10b981; font-weight: 600; }
+    .pending-footer {
+      padding: 8px;
+      background: #374151;
+      display: flex;
+      justify-content: flex-end;
+    }
+    .discard-btn {
+      background: transparent;
+      border: 1px solid #4b5563;
+      color: #9ca3af;
+      font-size: 0.7rem;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .discard-btn:hover {
+      background: #ef4444;
+      color: white;
+      border-color: #ef4444;
+    }
+
+    /* Help / Manual styles */
+    .manual-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+    .manual-tab-btn { padding: 8px 18px; border: 1px solid #334155; border-radius: 8px; background: #1e293b; color: #e2e8f0; cursor: pointer; font-weight: 500; }
+    .manual-tab-btn.active { background: #22c55e; color: #052e16; border-color: #22c55e; }
+    .manual-content { display: none; }
+    .manual-content.active { display: block; }
+    .manual-body { line-height: 1.7; font-size: 0.95rem; }
+    .manual-body h1 { font-size: 1.6rem; border-bottom: 1px solid #334155; padding-bottom: 8px; margin-top: 0; }
+    .manual-body h2 { font-size: 1.25rem; color: #22c55e; margin-top: 2em; border-bottom: 1px solid #1e293b; padding-bottom: 4px; }
+    .manual-body h3 { font-size: 1.05rem; color: #93c5fd; margin-top: 1.5em; }
+    .manual-body p { margin: 0.75em 0; }
+    .manual-body ul, .manual-body ol { margin: 0.5em 0; padding-left: 1.5em; }
+    .manual-body li { margin: 0.3em 0; }
+    .manual-body code { background: #1e293b; border: 1px solid #334155; padding: 1px 5px; border-radius: 4px; font-size: 0.87em; font-family: monospace; }
+    .manual-body pre { background: #0b1220; border: 1px solid #334155; border-radius: 8px; padding: 14px; overflow-x: auto; margin: 1em 0; }
+    .manual-body pre code { background: none; border: none; padding: 0; font-size: 0.88em; }
+    .manual-body table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+    .manual-body th { background: #1e293b; color: #e2e8f0; padding: 8px 12px; text-align: left; border: 1px solid #334155; }
+    .manual-body td { padding: 7px 12px; border: 1px solid #1e293b; }
+    .manual-body tr:nth-child(even) td { background: #0f172a; }
+    .manual-body hr { border: none; border-top: 1px solid #334155; margin: 2em 0; }
+    .manual-body a { color: #60a5fa; }
+    .manual-body blockquote { border-left: 3px solid #22c55e; padding-left: 12px; margin: 0.75em 0; color: #94a3b8; font-style: italic; }
+    .manual-loading { color: #94a3b8; padding: 20px; text-align: center; }
+
+    /* TA Login Modal */
+    #ta-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 9999; align-items: center; justify-content: center; }
+    #ta-modal-box { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 32px; width: 380px; max-width: 90vw; }
+    #ta-modal-box h2 { margin: 0 0 8px; font-size: 1.2rem; }
+    #ta-modal-box p { margin: 0 0 20px; }
+    #ta-error { color: #ef4444; font-size: 0.85rem; min-height: 1.2em; margin-bottom: 8px; }
+    #ta-lock-btn { margin-left: auto; font-size: 0.85rem; padding: 8px 12px; }
+    #ta-lock-btn.ta-active { background: #1e293b; border: 1px solid #22c55e; color: #22c55e; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>PhenoHive Station</h1>
+    <p class="muted">UTC now: {{UTC_NOW}}</p>
+
+    <nav class="navbar" aria-label="Dashboard navigation">
+      <button type="button" class="nav-btn active" data-view="liveView">Live</button>
+      <button type="button" class="nav-btn" data-view="dataView">Data</button>
+      <button type="button" class="nav-btn ta-tab" data-view="settingsView">Settings</button>
+      <button type="button" class="nav-btn ta-tab" data-view="wifiView">WiFi</button>
+      <button type="button" class="nav-btn" data-view="calibrateView">Calibrate</button>
+      <button type="button" class="nav-btn ta-tab" data-view="debugView">Debug</button>
+      <button type="button" class="nav-btn" data-view="helpView">Help</button>
+      <button type="button" id="ta-lock-btn" class="nav-btn">🔒 TA Login</button>
+    </nav>
+
+    <section id="liveView" class="view active">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+        <div id="statusPulse" style="width: 12px; height: 12px; background: #22c55e; border-radius: 50%; opacity: 0;"></div>
+        <h2 style="margin: 0;">Live Sensor Stream</h2>
+        <span id="liveStatusText" class="muted" style="margin-left: auto;">Syncing...</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
+        <!-- SHT35 Card -->
+        <div class="card" id="card-sht35">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+            <div>
+              <h3 style="margin: 0;">Temperature and humidity</h3>
+              <div class="muted" style="font-size: 0.8rem;" id="age-sht35">--</div>
+            </div>
+            <span class="sensor-status muted" id="status-sht35">offline</span>
+          </div>
+          <div style="font-size: 2rem; font-weight: bold; margin: 10px 0;">
+            <span id="live-temp">--</span>°C
+          </div>
+          <div style="font-size: 1.2rem; color: #94a3b8;">
+            Humidity: <span id="live-hum">--</span>%
+          </div>
+        </div>
+
+
+
+        <!-- Scale Card -->
+        <div class="card" id="card-scale">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+            <div>
+              <h3 style="margin: 0;">Scale</h3>
+              <div class="muted" style="font-size: 0.8rem;" id="age-scale">--</div>
+            </div>
+            <span class="sensor-status muted" id="status-scale_hx711">offline</span>
+          </div>
+          <div style="font-size: 2rem; font-weight: bold; margin: 10px 0;">
+            <span id="live-weight">--</span>g
+          </div>
+          <div style="font-size: 0.9rem; color: #94a3b8;" id="scale-meta">
+            No data
+          </div>
+        </div>
+
+        <!-- Camera Card -->
+        <div class="card" id="card-camera">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+            <div>
+              <h3 style="margin: 0;">Pi Camera</h3>
+              <div class="muted" style="font-size: 0.8rem;" id="age-camera">--</div>
+            </div>
+            <span class="sensor-status muted" id="status-camera">offline</span>
+          </div>
+          <div id="camera-preview-container" style="width: 100%; aspect-ratio: 4/3; background: #0b1220; border-radius: 8px; margin: 10px 0; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+            <img id="live-camera-img" src="" alt="Latest plant capture" style="width: 100%; height: 100%; object-fit: cover; display: none;">
+            <div id="camera-no-img" class="muted">No image yet</div>
+          </div>
+          <div style="font-size: 1rem; color: #94a3b8;">
+            Latest capture: <span id="age-camera-inline">--</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Spectral Data Card -->
+      <div class="card" id="card-tcs3448" style="margin-top: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px;">
+          <div>
+            <h3 style="margin: 0;">Light Spectrum Analysis</h3>
+            <div class="muted" style="font-size: 0.8rem;" id="age-tcs3448">--</div>
+          </div>
+          <span class="sensor-status muted" id="status-tcs3448">offline</span>
+        </div>
+        <div style="display: flex; gap: 16px; align-items: flex-end;">
+          <div style="flex: 1;">
+            <div id="spectral-bars" style="display: grid; grid-template-columns: repeat(13, 1fr); gap: 8px; height: 200px; align-items: end; background: #0b1220; padding: 15px; border-radius: 8px;">
+              <!-- Bars generated by JS -->
+            </div>
+            <div id="spectral-labels" style="display: grid; grid-template-columns: repeat(13, 1fr); gap: 8px; margin-top: 8px; text-align: center; font-size: 10px; font-weight: bold; color: #94a3b8;">
+              <!-- Labels generated by JS -->
+            </div>
+          </div>
+          
+          <div style="width: 60px; text-align: center;">
+            <div id="fd-bar-container" style="height: 200px; background: #0b1220; padding: 15px; border-radius: 8px; display: flex; flex-direction: column; justify-content: flex-end; align-items: center;">
+              <!-- FD Bar generated by JS -->
+            </div>
+            <div style="margin-top: 8px; font-size: 10px; font-weight: bold; color: #94a3b8; cursor: help;" title="Flicker Detection" id="fd-label">FD</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="dataView" class="view">
+      <section class="card">
+        <h2>Recent Captures</h2>
+        <p class="muted">Time since last sensor capture: <span id="data-capture-age">{{CAPTURE_AGE_TEXT}}</span></p>
+        <p class="muted">Estimated time until next capture: <span id="data-next-capture">{{NEXT_CAPTURE_TEXT}}</span></p>
+        <pre id="recent-captures-json">{{RECENT_CAPTURES_JSON}}</pre>
+      </section>
+    </section>
+
+    <section id="settingsView" class="view">
+      <section class="card">
+        <h2>Current Config (masked)</h2>
+        <pre id="config-json">{{CONFIG_JSON}}</pre>
+      </section>
+
+      <section class="card">
+        <h2>Editable Settings</h2>
+        <p class="muted">Runtime settings are listed here. Hardware wiring options (pins/I2C/calibration) remain restricted. Updates are written to config.ini and require a runtime restart.</p>
+        <button id="resetSettingsDefaults" type="button">Reset Runtime Defaults</button>
+        <div id="settingsList" class="settings-list"></div>
+        <pre id="result" class="muted"></pre>
+      </section>
+      
+      <div id="pending-changes-container">
+        <div class="pending-header">
+          <span>Pending Restart</span>
+          <span style="color: #ef4444; font-size: 1.2rem;">•</span>
+        </div>
+        <ul id="pending-changes-list"></ul>
+        <div class="pending-footer">
+          <button type="button" class="discard-btn" onclick="discardPendingChanges()">Discard List</button>
+        </div>
+      </div>
+
+      <button id="btn-restart-service" type="button">🚀 Restart PhenoHive Service</button>
+    </section>
+
+    <section id="wifiView" class="view">
+      <section class="card">
+        <h2>Raspberry Pi WiFi Setup</h2>
+        <p class="muted">Set the student WiFi credentials for the Raspberry Pi in the [wifi] config section (SSID, password, country, hidden, priority). Updates are written to config.ini and require a runtime restart.</p>
+        <button id="resetWifiDefaults" type="button">Reset WiFi Defaults</button>
+        <div id="wifiSettingsList" class="settings-list"></div>
+        <pre id="wifiResult" class="muted"></pre>
+      </section>
+    </section>
+
+    <section id="calibrateView" class="view">
+      <!-- Sensor Selection Menu -->
+      <div id="cal-selection" class="wizard-container">
+        <div class="wizard-header">
+          <h2>Sensor Calibration</h2>
+          <p class="muted">Select a sensor to start the guided calibration process.</p>
+        </div>
+        <div class="sensor-grid">
+          <div class="sensor-select-card" onclick="startWizard('scale')">
+            <span class="sensor-icon">⚖️</span>
+            <h3>Weight Scale</h3>
+            <p class="muted">HX711 Load Cell</p>
+          </div>
+          <div class="sensor-select-card" onclick="startWizard('camera')">
+            <span class="sensor-icon">📷</span>
+            <h3>Pi Camera</h3>
+            <p class="muted">Vision & Growth</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scale Wizard -->
+      <div id="wizard-scale" class="wizard-container" style="display: none;">
+        <div class="wizard-header">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <button class="muted" onclick="exitWizard()" style="margin:0; padding: 8px; background: transparent; border: 1px solid #334155;">&larr; Back</button>
+            <h2 style="margin: 0;">Scale Calibration</h2>
+          </div>
+          <div id="cal-scale-status" class="sensor-status muted">ready</div>
+        </div>
+
+        <div class="card">
+          <div class="stepper" id="stepper-scale">
+            <div class="step-dot active"></div>
+            <div class="step-dot"></div>
+            <div class="step-dot"></div>
+            <div class="step-dot"></div>
+          </div>
+
+          <!-- Step 1: Tare -->
+          <div class="wizard-step active" id="step-scale-1">
+            <h3>Step 1: Zero the Scale</h3>
+            <p>Remove everything from the scale platform and ensure it is not being touched.</p>
+            <div style="background: #0b1220; padding: 20px; border-radius: 8px; text-align: center;">
+              <div class="muted" style="margin-bottom: 8px;">Current Raw Value</div>
+              <div id="cal-scale-raw" style="font-size: 2.5rem; font-weight: bold; color: #22c55e;">--</div>
+            </div>
+            <button onclick="wizardTare()" style="width: 100%; background: #3b82f6;">Confirm: Scale is Empty</button>
+          </div>
+
+          <!-- Step 2: Weight -->
+          <div class="wizard-step" id="step-scale-2">
+            <h3>Step 2: Calibrate with Weight</h3>
+            <p>Place a known weight (e.g. your phone or a calibration weight) on the scale.</p>
+            <div style="display: flex; gap: 12px; align-items: flex-end;">
+              <div style="flex: 1;">
+                <label class="muted">Weight of the object (grams)</label>
+                <input type="number" id="cal-scale-known-weight" placeholder="e.g. 168" value="168">
+              </div>
+              <button onclick="wizardCalibrateScale()" style="background: #22c55e;">Calculate Factor</button>
+            </div>
+          </div>
+
+          <!-- Step 3: Container Offset -->
+          <div class="wizard-step" id="step-scale-3">
+            <h3>Step 3: Container Offset <span class="muted" style="font-size: 0.85rem;">(optional)</span></h3>
+            <p>Place the <strong>empty</strong> container (pot, tray, etc.) on the scale. Its weight will be subtracted from all future readings so only the plant and soil are measured.</p>
+            <div style="background: #0b1220; padding: 20px; border-radius: 8px; text-align: center;">
+              <div class="muted" style="margin-bottom: 8px;">Calibrated Weight</div>
+              <div id="cal-scale-weight-g" style="font-size: 2.5rem; font-weight: bold; color: #f59e0b;">-- g</div>
+            </div>
+            <button onclick="wizardSetWeightOffset()" style="width: 100%; background: #f59e0b; color: #000;">Confirm: Use This as Container Offset</button>
+            <button onclick="wizardSkipWeightOffset()" style="width: 100%; background: transparent; border: 1px solid #475569; color: #94a3b8;">Skip (no container offset)</button>
+          </div>
+
+          <!-- Step 4: Success -->
+          <div class="wizard-step" id="step-scale-4">
+            <div style="text-align: center; padding: 20px;">
+              <span style="font-size: 4rem;">✅</span>
+              <h3>Calibration Successful!</h3>
+              <p class="muted">The scale is now calibrated and ready to use.</p>
+              <button onclick="exitWizard()" style="width: 100%; margin-top: 20px;">Finish</button>
+            </div>
+          </div>
+          
+          <div id="cal-scale-result" class="muted" style="margin-top: 10px; text-align: center;"></div>
+        </div>
+      </div>
+
+
+      <!-- Camera Wizard -->
+      <div id="wizard-camera" class="wizard-container" style="display: none;">
+        <div class="wizard-header">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <button class="muted" onclick="exitWizard()" style="margin:0; padding: 8px; background: transparent; border: 1px solid #334155;">&larr; Back</button>
+            <h2 style="margin: 0;">Camera Calibration</h2>
+          </div>
+          <div id="cal-camera-status" class="sensor-status muted">ready</div>
+        </div>
+
+        <div class="card">
+          <div class="stepper" id="stepper-camera">
+            <div class="step-dot active"></div>
+            <div class="step-dot"></div>
+            <div class="step-dot"></div>
+          </div>
+
+          <!-- Step 1: Background -->
+          <div class="wizard-step active" id="step-camera-1">
+            <h3>Step 1: Empty Station</h3>
+            <p>Remove everything from the camera view to capture a clean background for shadow removal.</p>
+            <div style="width: 100%; aspect-ratio: 4/3; background: #0b1220; border-radius: 8px; overflow: hidden; position: relative; margin-bottom: 10px;">
+              <img id="cal-bg-img" src="/images/background.jpg" style="width: 100%; height: 100%; object-fit: cover;">
+              <div id="cal-bg-loading" style="display: none; position: absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; color:white;">Capturing...</div>
+            </div>
+            <button id="btn-capture-bg" onclick="wizardCaptureBG()" style="width: 100%; background: #3b82f6;">Capture Background</button>
+          </div>
+
+          <!-- Step 2: Ratio -->
+          <div class="wizard-step" id="step-camera-2">
+            <h3>Step 2: Scale Ratio</h3>
+            <p>Enter the real-world size of a reference object currently in view.</p>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+              <div>
+                <label class="muted">Object Size (cm)</label>
+                <input type="number" id="cal-ref-cm" placeholder="e.g. 5.0">
+              </div>
+              <div>
+                <label class="muted">Object Size (pixels)</label>
+                <input type="number" id="cal-ref-px" placeholder="e.g. 120">
+              </div>
+            </div>
+            <div style="margin-top: 12px; background: #0b1220; padding: 10px; border-radius: 4px; text-align: center;">
+              Calculated Ratio: <span id="cal-ratio-calc" style="font-weight: bold; color: #fbbf24;">--</span>
+            </div>
+            <button onclick="wizardApplyRatio()" style="width: 100%; background: #22c55e; margin-top: 15px;">Apply Scale Ratio</button>
+          </div>
+
+          <!-- Step 3: Success -->
+          <div class="wizard-step" id="step-camera-3">
+            <div style="text-align: center; padding: 20px;">
+              <span style="font-size: 4rem;">✅</span>
+              <h3>Vision Calibrated!</h3>
+              <p class="muted">Shadow removal and scale ratios are now configured.</p>
+              <button onclick="exitWizard()" style="width: 100%; margin-top: 20px;">Finish</button>
+            </div>
+          </div>
+          
+          <div id="cal-camera-result" class="muted" style="margin-top: 10px; text-align: center;"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="helpView" class="view">
+      <div class="card">
+        <div class="manual-tabs">
+          <button type="button" class="manual-tab-btn active" data-manual="assistant">Assistant Manual</button>
+          <button type="button" class="manual-tab-btn" data-manual="student">Student Manual</button>
+        </div>
+        <div id="manual-assistant" class="manual-content active">
+          <div class="manual-loading" id="manual-assistant-loading">Loading manual...</div>
+          <div class="manual-body" id="manual-assistant-body"></div>
+        </div>
+        <div id="manual-student" class="manual-content">
+          <div class="manual-loading" id="manual-student-loading">Loading manual...</div>
+          <div class="manual-body" id="manual-student-body"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="debugView" class="view">
+      <section class="card">
+        <h2>Runtime Status</h2>
+        <pre id="status-json">{{STATUS_JSON}}</pre>
+      </section>
+
+      <section class="card">
+        <h2>Actions</h2>
+        <div style="display: flex; gap: 10px;">
+          <p class="muted">Restart action moved to Settings tab.</p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Editable Config (raw)</h2>
+        <pre id="editable-config-json">{{EDITABLE_CONFIG_JSON}}</pre>
+      </section>
+    </section>
+  </main>
+
+  <!-- TA Login Modal -->
+  <div id="ta-modal">
+    <div id="ta-modal-box">
+      <h2>Teaching Assistant Access</h2>
+      <p class="muted">Enter the TA password to unlock advanced settings, debug data, and the assistant guide.</p>
+      <input type="password" id="ta-password-input" placeholder="TA password">
+      <div id="ta-error"></div>
+      <div style="display: flex; gap: 8px;">
+        <button id="ta-login-btn" style="flex: 1;">Unlock</button>
+        <button id="ta-cancel-btn" style="flex: 0; background: #1e293b; border: 1px solid #334155; color: #e2e8f0; margin-top: 0;">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script id="editable-config-data" type="application/json">{{EDITABLE_CONFIG_JSON_RAW}}</script>
+  <script id="default-editable-config-data" type="application/json">{{DEFAULT_EDITABLE_CONFIG_JSON_RAW}}</script>
+  <script>
+    console.log("PhenoHive Station UI script starting...");
+    const ACTIVE_TAB_STORAGE_KEY = 'phenohive_debug_active_tab';
+    const TA_MODE_KEY = 'phenohive_ta_mode';
+    const HAS_TA_PASSWORD = "{{HAS_TA_PASSWORD}}" === "1";
+
+    let editableConfig = {};
+    let defaultEditableConfig = {};
+    try {
+        const configData = document.getElementById('editable-config-data');
+        const defaultConfigData = document.getElementById('default-editable-config-data');
+        if (configData) editableConfig = JSON.parse(configData.textContent);
+        if (defaultConfigData) defaultEditableConfig = JSON.parse(defaultConfigData.textContent);
+        console.log("Config loaded successfully");
+    } catch (e) {
+        console.error("Critical: Failed to parse configuration JSON:", e);
+    }
+
+    let autoRefreshPaused = false;
+    let currentView = 'liveView';
+    let isTaMode = false;
+    let activateView = (viewId) => {}; // filled in by initializeNavbar
+
+    const SPECTRAL_CHANNELS = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'fz', 'fy', 'fxl', 'nir', '2x_vis_1'];
+    const FD_CHANNEL = 'fd_1';
+    const ALL_UI_CHANNELS = [...SPECTRAL_CHANNELS, FD_CHANNEL];
+    const CHANNEL_COLORS = {
+      f1: '#4a00e0', f2: '#8e2de2', f3: '#00c6ff', f4: '#0072ff',
+      f5: '#22c55e', f6: '#eab308', f7: '#f97316', f8: '#ef4444',
+      fz: '#3b82f6', fy: '#10b981', fxl: '#ffffff', nir: '#475569',
+      '2x_vis_1': '#6366f1', 'fd_1': '#ec4899'
+    };
+
+    const CHANNEL_NAMES = {
+      f1: 'Violet (415nm)', f2: 'Indigo (445nm)', f3: 'Blue (480nm)', f4: 'Cyan (515nm)',
+      f5: 'Green (555nm)', f6: 'Yellow (590nm)', f7: 'Orange (630nm)', f8: 'Red (680nm)',
+      fz: 'CIE Z (Short)', fy: 'CIE Y (Green)', fxl: 'CIE X (Long)', nir: 'Near Infrared (910nm)',
+      '2x_vis_1': 'Visible (Broadband)', fd_1: 'Flicker Detection'
+    };
+
+    const BOOLEAN_OPTIONS = [
+      { label: 'True', value: 'true' },
+      { label: 'False', value: 'false' }
+    ];
+    const SENSOR_MODE_OPTIONS = [
+      { label: 'Mock', value: 'mock' },
+      { label: 'Real', value: 'real' }
+    ];
+
+    function getEditableEntries() {
+      const entries = [];
+      for (const [section, options] of Object.entries(editableConfig)) {
+        for (const [option, value] of Object.entries(options)) {
+          entries.push({ section, option, value });
+        }
+      }
+      entries.sort((a, b) => {
+        const left = `${a.section}.${a.option}`;
+        const right = `${b.section}.${b.option}`;
+        return left.localeCompare(right);
+      });
+      return entries;
+    }
+
+    let originalConfig = {};
+    function captureOriginalConfig() {
+        originalConfig = JSON.parse(JSON.stringify(editableConfig));
+        console.log("Original config captured for revert functionality");
+    }
+
+    function getToggleOptions(value) {
+      const normalized = String(value).trim().toLowerCase();
+      if (['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'].includes(normalized)) {
+        return BOOLEAN_OPTIONS;
+      }
+      if (['mock', 'real'].includes(normalized)) {
+        return SENSOR_MODE_OPTIONS;
+      }
+      return null;
+    }
+
+    function isWifiEntry(entry) {
+      return entry.section.toLowerCase() === 'wifi';
+    }
+
+    function initializeStaticConfigUI() {
+      console.log("Initializing static UI components...");
+      
+      // 1. Vision Parameters
+      try {
+          const kernelInput = document.getElementById('cal-vision-kernel');
+          if (kernelInput && editableConfig.vision) {
+              kernelInput.value = editableConfig.vision.kernel_size || 20;
+              const sigmaInput = document.getElementById('cal-vision-sigma');
+              if (sigmaInput) sigmaInput.value = editableConfig.vision.sigma || 2.0;
+              const channelInput = document.getElementById('cal-vision-channel');
+              if (channelInput) channelInput.value = editableConfig.vision.channel || 'k';
+              const ratioInput = document.getElementById('cal-vision-ratio');
+              if (ratioInput) ratioInput.value = editableConfig.vision.pixel_to_cm_ratio || 1.0;
+          }
+      } catch (e) {
+          console.error("Failed to populate vision parameters:", e);
+      }
+
+      // 2. Spectral Scaling Grid
+      try {
+          const grid = document.getElementById('tcs-scaling-grid');
+          if (grid) {
+              grid.innerHTML = '';
+              ALL_UI_CHANNELS.forEach(ch => {
+                  const wrapper = document.createElement('div');
+                  wrapper.style.display = 'flex';
+                  wrapper.style.flexDirection = 'column';
+                  const label = document.createElement('label');
+                  label.className = 'muted';
+                  label.style.fontSize = '0.75rem';
+                  label.textContent = ch.toUpperCase().replace('_', ' ');
+                  const input = document.createElement('input');
+                  input.type = 'number';
+                  input.step = '0.01';
+                  input.id = `input-scale-${ch}`;
+                  input.style.padding = '4px';
+                  input.style.background = '#0b1220';
+                  input.style.border = '1px solid #1e293b';
+                  input.style.color = 'white';
+                  input.style.borderRadius = '4px';
+                  if (editableConfig && editableConfig.tcs3448) {
+                      input.value = editableConfig.tcs3448[`scale_${ch}`] || 1.0;
+                  }
+                  wrapper.appendChild(label);
+                  wrapper.appendChild(input);
+                  grid.appendChild(wrapper);
+              });
+          }
+      } catch (e) {
+          console.error("Failed to populate spectral scaling grid:", e);
+      }
+    }
+
+    async function saveConfig(section, option, value, resultTargetId = 'result') {
+      const payload = { section, option, value };
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      const resultTarget = document.getElementById(resultTargetId);
+      if (resultTarget) {
+        resultTarget.textContent = JSON.stringify(data, null, 2);
+      }
+      if (data.ok) {
+        editableConfig[section][option] = value;
+        addPendingChange(section, option, value);
+      } else {
+        alert('Failed to save setting: ' + (data.error || 'Unknown error'));
+      }
+      return data;
+    }
+
+    async function pollStatus() {
+      if (autoRefreshPaused) return;
+
+      try {
+        const res = await fetch('/api/status');
+        if (!res.ok) throw new Error('Network error');
+        const status = await res.json();
+        
+        updateLiveView(status);
+        updateCalibrationView(status);
+        
+        // Update other views if they are visible
+        if (currentView === 'debugView') {
+          document.getElementById('status-json').textContent = JSON.stringify(status, null, 2);
+        }
+        if (currentView === 'dataView') {
+          document.getElementById('recent-captures-json').textContent = JSON.stringify(status.recent_captures, null, 2);
+        }
+
+        // Pulse the status dot
+        const pulse = document.getElementById('statusPulse');
+        pulse.style.opacity = '1';
+        setTimeout(() => pulse.style.opacity = '0', 200);
+        document.getElementById('liveStatusText').textContent = 'Connected • ' + new Date().toLocaleTimeString();
+
+      } catch (err) {
+        document.getElementById('liveStatusText').textContent = 'Error syncing: ' + err.message;
+      }
+    }
+
+    function getTimeAgo(timestamp) {
+      if (!timestamp) return '--';
+      const now = new Date();
+      const diffMs = now - new Date(timestamp);
+      const diffSec = Math.floor(diffMs / 1000);
+      if (diffSec < 0) return `just now`;
+      if (diffSec < 60) return `${diffSec}s ago`;
+      const diffMin = Math.floor(diffSec / 60);
+      return `${diffMin}m ${diffSec % 60}s ago`;
+    }
+
+    function updateLiveView(status) {
+      try {
+        const sensors = status.sensors || {};
+        const captures = status.recent_captures || [];
+        const raw = status.latest_raw_sample || {};
+        
+        // Prioritize raw sample for "Live" feel, fall back to last averaged capture
+        const latest = (Object.keys(raw).length > 0) ? raw : (captures.length > 0 ? captures[captures.length - 1] : null);
+        
+        // Find the latest record that actually contains a vision image path.
+        // Use the dedicated latest_vision_capture field first — it persists across
+        // recent_captures rolling off (camera fires every ~144 publish cycles).
+        const latestVision = status.latest_vision_capture || {};
+        let latestWithImage = null;
+        if (latest && latest.vision_image_path) {
+          latestWithImage = latest;
+        } else if (latestVision.vision_image_path) {
+          latestWithImage = latestVision;
+        } else {
+          for (let i = captures.length - 1; i >= 0; i--) {
+            if (captures[i].vision_image_path) {
+              latestWithImage = captures[i];
+              break;
+            }
+          }
+        }
+
+        // Update Sensor Status Badges
+        for (const [key, sensor] of Object.entries(sensors)) {
+          const badge = document.getElementById(`status-${key}`);
+          if (badge) {
+            badge.textContent = sensor.status || 'offline';
+            badge.style.color = sensor.status === 'ready' ? '#22c55e' : '#ef4444';
+          }
+        }
+
+        if (latest) {
+          // Update SHT35
+          if (latest.sht35_air_temperature_c !== undefined) {
+            document.getElementById('live-temp').textContent = latest.sht35_air_temperature_c?.toFixed(1) || '--';
+            document.getElementById('live-hum').textContent = latest.sht35_air_humidity_pct?.toFixed(0) || '--';
+          }
+          
+
+
+          // Update Scale
+          if (latest.scale_hx711_weight_g !== undefined) {
+            document.getElementById('live-weight').textContent = latest.scale_hx711_weight_g?.toFixed(1) || '--';
+            const score = latest.scale_hx711_quality_score !== undefined ? latest.scale_hx711_quality_score : '--';
+            const cv = latest.scale_hx711_max_cv !== undefined ? latest.scale_hx711_max_cv.toFixed(3) : '--';
+            document.getElementById('scale-meta').textContent = `Quality: ${score}% • CV: ${cv}`;
+          }
+
+          // Update Camera / Vision
+          const img = document.getElementById('live-camera-img');
+          const noImg = document.getElementById('camera-no-img');
+          
+          if (latestWithImage && latestWithImage.vision_image_path) {
+            const filename = latestWithImage.vision_image_path.split(/[/\\]/).pop();
+            img.src = `/images/${filename}`;
+            img.style.display = 'block';
+            noImg.style.display = 'none';
+          }
+
+          // Update Ages
+          const age = getTimeAgo(latest.timestamp);
+          const imageAge = latestWithImage ? getTimeAgo(latestWithImage.timestamp) : '--';
+
+          document.getElementById('age-sht35').textContent = age;
+          document.getElementById('age-scale').textContent = age;
+          document.getElementById('age-camera').textContent = imageAge;
+          document.getElementById('age-tcs3448').textContent = age;
+          document.getElementById('age-camera-inline').textContent = imageAge;
+
+          // Update Spectral Data
+          updateSpectralBars(latest);
+        }
+      } catch (err) {
+        console.error("updateLiveView failed:", err);
+      }
+    }
+
+    function updateSpectralBars(latest) {
+      const container = document.getElementById('spectral-bars');
+      const fdContainer = document.getElementById('fd-bar-container');
+      if (!container || !fdContainer) return;
+      
+      // If it's the first time, create the bars and labels
+      if (container.children.length === 0) {
+        const labelContainer = document.getElementById('spectral-labels');
+        
+        ALL_UI_CHANNELS.forEach(ch => {
+          const name = CHANNEL_NAMES[ch] || ch;
+          const isFD = (ch === FD_CHANNEL);
+          const targetContainer = isFD ? fdContainer : container;
+          
+          // Create Bar
+          const barWrapper = document.createElement('div');
+          barWrapper.style.display = 'flex';
+          barWrapper.style.flexDirection = 'column';
+          barWrapper.style.height = '100%';
+          barWrapper.style.justifyContent = 'flex-end';
+          barWrapper.style.alignItems = 'center';
+          barWrapper.style.position = 'relative';
+          barWrapper.style.width = isFD ? '100%' : 'auto';
+          barWrapper.title = name;
+          
+          const valLabel = document.createElement('div');
+          valLabel.id = `val-${ch}`;
+          valLabel.style.fontSize = '9px';
+          valLabel.style.color = '#e2e8f0';
+          valLabel.style.marginBottom = '4px';
+          valLabel.textContent = '0';
+
+          const bar = document.createElement('div');
+          bar.id = `bar-${ch}`;
+          bar.style.width = '100%';
+          bar.style.height = '0%';
+          bar.style.background = CHANNEL_COLORS[ch] || '#22c55e';
+          bar.style.borderRadius = '2px 2px 0 0';
+          bar.style.transition = 'height 0.5s ease';
+          bar.title = name;
+          
+          barWrapper.appendChild(valLabel);
+          barWrapper.appendChild(bar);
+          targetContainer.appendChild(barWrapper);
+          
+          // Create Label (only for main spectrum, FD label is static in HTML)
+          if (!isFD && labelContainer) {
+            const span = document.createElement('span');
+            span.textContent = ch === '2x_vis_1' ? 'VIS' : ch.toUpperCase();
+            span.title = name;
+            span.style.cursor = 'help';
+            labelContainer.appendChild(span);
+          }
+        });
+      }
+
+      // 1. Max for main spectrum (F1-F8, FZ, FY, FXL, NIR, VIS)
+      let maxSpec = 100;
+      SPECTRAL_CHANNELS.forEach(ch => {
+        const val = latest[`tcs3448_${ch}`] || 0;
+        if (val > maxSpec) maxSpec = val;
+      });
+
+      // 2. Max for FD (isolated). We use a fixed floor of 1000 so it doesn't always look full.
+      const valFD = latest[`tcs3448_${FD_CHANNEL}`] || 0;
+      const maxFD = Math.max(1000, valFD); 
+
+      // Update heights and values
+      ALL_UI_CHANNELS.forEach(ch => {
+        const val = latest[`tcs3448_${ch}`] || 0;
+        const bar = document.getElementById(`bar-${ch}`);
+        const label = document.getElementById(`val-${ch}`);
+        if (bar && label) {
+          const isFD = (ch === FD_CHANNEL);
+          const currentMax = isFD ? maxFD : maxSpec;
+          const height = (val / currentMax) * 100;
+          bar.style.height = `${height}%`;
+          
+          if (isFD) {
+            label.textContent = Math.round(val);
+          } else {
+            // Show mW/m² with 1 decimal place for small values
+            label.textContent = (val < 10 ? val.toFixed(1) : Math.round(val)) + ' mW/m²';
+          }
+        }
+      });
+    }
+
+    function initializeSettingsViews() {
+      const entries = getEditableEntries();
+      const runtimeEntries = entries.filter((entry) => !isWifiEntry(entry));
+      const wifiEntries = entries.filter((entry) => isWifiEntry(entry));
+      renderSettingsList('settingsList', 'result', runtimeEntries);
+      renderSettingsList('wifiSettingsList', 'wifiResult', wifiEntries);
+    }
+
+    function renderSettingsList(containerId, resultTargetId, entries) {
+      const listContainer = document.getElementById(containerId);
+      if (!listContainer) return;
+      listContainer.innerHTML = '';
+      if (entries.length === 0) {
+        listContainer.innerHTML = '<p class="muted">No editable settings available.</p>';
+        return;
+      }
+      for (const entry of entries) {
+        const item = document.createElement('div');
+        item.className = 'setting-item';
+        const key = document.createElement('div');
+        key.className = 'setting-key';
+        key.textContent = `${entry.section}.${entry.option}`;
+        const controls = document.createElement('div');
+        controls.className = 'setting-controls';
+        const toggleOptions = getToggleOptions(entry.value);
+        if (toggleOptions) {
+          const toggleGroup = document.createElement('div');
+          toggleGroup.className = 'toggle-group';
+          const normalizedValue = String(entry.value).trim().toLowerCase();
+          for (const toggleOption of toggleOptions) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'toggle-btn';
+            button.textContent = toggleOption.label;
+            if (normalizedValue === toggleOption.value) button.classList.add('active');
+            button.addEventListener('click', async () => {
+              const data = await saveConfig(entry.section, entry.option, toggleOption.value, resultTargetId);
+              if (data.ok) {
+                for (const sibling of toggleGroup.children) sibling.classList.remove('active');
+                button.classList.add('active');
+              }
+            });
+            toggleGroup.appendChild(button);
+          }
+          controls.appendChild(toggleGroup);
+        } else {
+          const input = document.createElement('input');
+          input.type = entry.option.toLowerCase().includes('password') ? 'password' : 'text';
+          input.value = String(entry.value);
+          const saveButton = document.createElement('button');
+          saveButton.type = 'button';
+          saveButton.className = 'save-btn';
+          saveButton.textContent = 'Save';
+          saveButton.addEventListener('click', async () => {
+            await saveConfig(entry.section, entry.option, input.value, resultTargetId);
+          });
+          controls.appendChild(input);
+          controls.appendChild(saveButton);
+        }
+        item.appendChild(key);
+        item.appendChild(controls);
+        listContainer.appendChild(item);
+      }
+    }
+
+    function initializeNavbar() {
+      const navButtons = document.querySelectorAll('.nav-btn');
+      const views = document.querySelectorAll('.view');
+      activateView = (viewId) => {
+        currentView = viewId;
+        for (const navButton of navButtons) navButton.classList.remove('active');
+        for (const view of views) view.classList.remove('active');
+        const activeButton = Array.from(navButtons).find((btn) => btn.dataset.view === viewId);
+        if (activeButton) activeButton.classList.add('active');
+        const targetView = document.getElementById(viewId);
+        if (targetView) targetView.classList.add('active');
+        
+        // Pause auto-refresh if in settings to avoid losing input focus
+        autoRefreshPaused = (viewId === 'settingsView' || viewId === 'wifiView');
+
+        // Show/Hide restart button and pending changes
+        const restartBtn = document.getElementById('btn-restart-service');
+        const pendingContainer = document.getElementById('pending-changes-container');
+        if (restartBtn) {
+            const isSettings = (viewId === 'settingsView' || viewId === 'wifiView');
+            restartBtn.style.display = isSettings ? 'block' : 'none';
+            if (pendingContainer) {
+                pendingContainer.style.display = (isSettings && hasPendingChanges()) ? 'flex' : 'none';
+            }
+        }
+      };
+
+      for (const button of navButtons) {
+        button.addEventListener('click', () => {
+          const targetViewId = button.dataset.view;
+          if (!targetViewId) return;
+          activateView(targetViewId);
+          localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, targetViewId);
+        });
+      }
+
+      document.getElementById('btn-restart-service').addEventListener('click', async () => {
+          if (!confirm('Are you sure you want to restart the PhenoHive service? The dashboard will be offline for a few seconds.')) return;
+          try {
+              const resp = await fetch('/api/restart', { method: 'POST' });
+              const data = await resp.json();
+              if (data.ok) {
+                  localStorage.removeItem(PENDING_CHANGES_KEY);
+                  // Show a blocking overlay or similar
+                  document.body.style.opacity = '0.5';
+                  document.body.style.pointerEvents = 'none';
+                  
+                  let countdown = 5;
+                  const btn = document.getElementById('btn-restart-service');
+                  btn.textContent = `Restarting in ${countdown}s...`;
+                  
+                  const timer = setInterval(() => {
+                      countdown--;
+                      if (countdown <= 0) {
+                          clearInterval(timer);
+                          btn.textContent = "Reconnecting...";
+                          // Attempt to reload every 2 seconds until successful
+                          const retry = setInterval(async () => {
+                              try {
+                                  const check = await fetch('/api/status');
+                                  if (check.ok) {
+                                      clearInterval(retry);
+                                      location.reload();
+                                  }
+                              } catch (e) {
+                                  console.log("Still restarting...");
+                              }
+                          }, 2000);
+                      } else {
+                          btn.textContent = `Restarting in ${countdown}s...`;
+                      }
+                  }, 1000);
+              } else {
+                  alert('Error: ' + data.error);
+              }
+          } catch (e) {
+              console.log("Restart signal sent, connection lost as expected.");
+              setTimeout(() => location.reload(), 5000);
+          }
+      });
+      const storedViewId = localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+      if (storedViewId && document.getElementById(storedViewId)) activateView(storedViewId);
+    }
+
+    function updateCalibrationView(status) {
+      if (currentView !== 'calibrateView') return;
+
+      const sensors = status.sensors || {};
+      const latest = status.latest_raw_sample || (status.recent_captures && status.recent_captures.length > 0 ? status.recent_captures[status.recent_captures.length - 1] : null);
+
+      // Update status badges for all wizards
+      const statusMap = { scale: 'cal-scale-status', air: 'cal-sht35-status', light: 'cal-tcs-status', camera: 'cal-camera-status' };
+      for (const [key, id] of Object.entries(statusMap)) {
+          const badge = document.getElementById(id);
+          const sensorKey = key === 'scale' ? 'scale_hx711' : (key === 'air' ? 'sht35' : (key === 'light' ? 'tcs3448' : 'camera'));
+          if (badge && sensors[sensorKey]) {
+              const s = sensors[sensorKey].status;
+              badge.textContent = s || 'offline';
+              badge.style.color = s === 'ready' ? '#22c55e' : '#ef4444';
+          }
+      }
+
+      if (!latest) return;
+
+      // Update Scale Values
+      const calScaleRaw = document.getElementById('cal-scale-raw');
+      if (calScaleRaw && latest.scale_hx711_weight_raw !== undefined) {
+          calScaleRaw.textContent = Math.round(latest.scale_hx711_weight_raw);
+      }
+      const calScaleWeightG = document.getElementById('cal-scale-weight-g');
+      if (calScaleWeightG && latest.scale_hx711_weight_raw !== undefined) {
+          const raw = latest.scale_hx711_weight_raw;
+          const tare = parseFloat(editableConfig?.scale_hx711?.tare || 0);
+          const factor = parseFloat(editableConfig?.scale_hx711?.calibration_factor || 1);
+          calScaleWeightG.textContent = ((raw - tare) * factor).toFixed(1) + ' g';
+      }
+
+      // Update Light Values (Lux remains visible in badge)
+      const luxBadge = document.getElementById('cal-tcs-lux');
+      if (luxBadge && latest.tcs3448_lux !== undefined) {
+          luxBadge.textContent = Math.round(latest.tcs3448_lux);
+      }
+
+      // Update Camera Ratio Calc
+      const refCm = document.getElementById('cal-ref-cm');
+      const refPx = document.getElementById('cal-ref-px');
+      const calcRes = document.getElementById('cal-ratio-calc');
+      if (refCm && refPx && calcRes) {
+          const cm = parseFloat(refCm.value);
+          const px = parseFloat(refPx.value);
+          if (!isNaN(cm) && !isNaN(px) && px !== 0) {
+              calcRes.textContent = (cm / px).toFixed(6);
+          }
+      }
+    }
+
+    let activeWizard = null;
+    function startWizard(sensor) {
+        activeWizard = sensor;
+        document.getElementById('cal-selection').style.display = 'none';
+        document.getElementById(`wizard-${sensor}`).style.display = 'flex';
+        showStep(sensor, 1);
+    }
+
+    function exitWizard() {
+        if (activeWizard) {
+            document.getElementById(`wizard-${activeWizard}`).style.display = 'none';
+            activeWizard = null;
+        }
+        document.getElementById('cal-selection').style.display = 'flex';
+    }
+
+    function showStep(wizard, step) {
+        const wizardEl = document.getElementById(`wizard-${wizard}`);
+        const steps = wizardEl.querySelectorAll('.wizard-step');
+        steps.forEach((s, idx) => {
+            s.classList.toggle('active', (idx + 1) === step);
+        });
+        
+        const dots = wizardEl.querySelectorAll('.step-dot');
+        dots.forEach((d, idx) => {
+            d.classList.toggle('active', (idx + 1) <= step);
+        });
+    }
+
+    /* Scale Wizard Actions */
+    async function wizardTare() {
+        const rawVal = document.getElementById('cal-scale-raw').textContent;
+        if (rawVal === '--') return alert('No raw weight data available.');
+        const res = await saveConfig('scale_hx711', 'tare', rawVal, 'cal-scale-result');
+        if (res.ok) showStep('scale', 2);
+    }
+
+    async function wizardCalibrateScale() {
+        const rawVal = parseFloat(document.getElementById('cal-scale-raw').textContent);
+        const tareVal = parseFloat(editableConfig?.scale_hx711?.tare || 0);
+        const knownWeight = parseFloat(document.getElementById('cal-scale-known-weight').value);
+
+        if (isNaN(rawVal) || isNaN(knownWeight) || knownWeight <= 0) {
+            return alert('Please enter a valid known weight and ensure sensor is online.');
+        }
+
+        const factor = knownWeight / (rawVal - tareVal);
+        const res = await saveConfig('scale_hx711', 'calibration_factor', factor.toString(), 'cal-scale-result');
+        if (res.ok) showStep('scale', 3);
+    }
+
+    async function wizardSetWeightOffset() {
+        const rawVal = parseFloat(document.getElementById('cal-scale-raw').textContent);
+        const tareVal = parseFloat(editableConfig?.scale_hx711?.tare || 0);
+        const factor = parseFloat(editableConfig?.scale_hx711?.calibration_factor || 1);
+        if (isNaN(rawVal)) return alert('No raw weight data available.');
+        const offsetG = (rawVal - tareVal) * factor;
+        const res = await saveConfig('scale_hx711', 'weight_offset', offsetG.toFixed(2), 'cal-scale-result');
+        if (res.ok) showStep('scale', 4);
+    }
+
+    async function wizardSkipWeightOffset() {
+        const res = await saveConfig('scale_hx711', 'weight_offset', '0.0', 'cal-scale-result');
+        if (res.ok) showStep('scale', 4);
+    }
+
+    /* Air Wizard Actions */
+    async function wizardApplyAirOffsets() {
+        const refTemp = parseFloat(document.getElementById('cal-ref-temp').value);
+        const refHum = parseFloat(document.getElementById('cal-ref-hum').value);
+        const rawTemp = parseFloat(document.getElementById('cal-sht35-temp-raw').textContent.replace('Raw: ', ''));
+        const rawHum = parseFloat(document.getElementById('cal-sht35-hum-raw').textContent.replace('Raw: ', ''));
+
+        if (isNaN(refTemp) || isNaN(refHum) || isNaN(rawTemp) || isNaN(rawHum)) {
+            return alert('Please enter both reference temperature and humidity.');
+        }
+
+        const tOffset = refTemp - rawTemp;
+        const hOffset = refHum - rawHum;
+
+        const res1 = await saveConfig('sht35', 'temp_offset', tOffset.toFixed(2), 'cal-sht35-result');
+        const res2 = await saveConfig('sht35', 'hum_offset', hOffset.toFixed(2), 'cal-sht35-result');
+        if (res1.ok && res2.ok) showStep('air', 2);
+    }
+
+    /* Light Wizard Actions */
+    async function wizardCaptureDark() {
+        const rawMaxStr = document.getElementById('cal-tcs-lux-raw').textContent.replace('Raw Max: ', '');
+        if (rawMaxStr === '--') return alert('No spectral data available.');
+        const res = await saveConfig('tcs3448', 'dark_offset', rawMaxStr, 'cal-tcs-result');
+        if (res.ok) showStep('light', 2);
+    }
+
+    /* Camera Wizard Actions */
+    async function wizardCaptureBG() {
+        const loading = document.getElementById('cal-bg-loading');
+        const img = document.getElementById('cal-bg-img');
+        loading.style.display = 'flex';
+        
+        try {
+            const resp = await fetch('/api/camera/capture-background', { method: 'POST' });
+            const data = await resp.json();
+            if (data.ok) {
+                img.src = '/images/background.jpg?t=' + new Date().getTime();
+                showStep('camera', 2);
+            } else {
+                alert('Error: ' + data.error);
+            }
+        } catch (e) {
+            alert('Capture failed: ' + e);
+        } finally {
+            loading.style.display = 'none';
+        }
+    }
+
+    async function wizardApplyRatio() {
+        const ratio = document.getElementById('cal-ratio-calc').textContent;
+        if (ratio === '--') return alert('Please enter object size in cm and pixels.');
+        const res = await saveConfig('vision', 'pixel_to_cm_ratio', ratio, 'cal-camera-result');
+        if (res.ok) showStep('camera', 3);
+    }
+
+    function setupCalibrationListeners() {
+        // No longer needed as we use inline onclick for wizards
+    }
+
+    const PENDING_CHANGES_KEY = 'phenohive_pending_changes';
+    function addPendingChange(section, option, value) {
+        let changes = JSON.parse(localStorage.getItem(PENDING_CHANGES_KEY) || '{}');
+        if (!changes[section]) changes[section] = {};
+        changes[section][option] = value;
+        localStorage.setItem(PENDING_CHANGES_KEY, JSON.stringify(changes));
+        updatePendingChangesUI();
+    }
+
+    function hasPendingChanges() {
+        const changes = JSON.parse(localStorage.getItem(PENDING_CHANGES_KEY) || '{}');
+        return Object.keys(changes).length > 0;
+    }
+
+    function updatePendingChangesUI() {
+        const container = document.getElementById('pending-changes-container');
+        const list = document.getElementById('pending-changes-list');
+        const changes = JSON.parse(localStorage.getItem(PENDING_CHANGES_KEY) || '{}');
+        
+        if (!list) return;
+        list.innerHTML = '';
+        
+        let count = 0;
+        for (const section in changes) {
+            for (const option in changes[section]) {
+                count++;
+                const li = document.createElement('li');
+                li.className = 'pending-item';
+                li.innerHTML = `
+                    <span class="pending-key">${section}.${option}</span>
+                    <span class="pending-val">➔ ${changes[section][option]}</span>
+                `;
+                list.appendChild(li);
+            }
+        }
+        
+        if (container) {
+            const isSettings = (currentView === 'settingsView' || currentView === 'wifiView');
+            container.style.display = (isSettings && count > 0) ? 'flex' : 'none';
+        }
+    }
+
+    async function discardPendingChanges() {
+        const changes = JSON.parse(localStorage.getItem(PENDING_CHANGES_KEY) || '{}');
+        const count = Object.keys(changes).length;
+        if (count === 0) return;
+
+        if (!confirm(`This will REVERT all ${count} pending changes in the config file back to their original values. Continue?`)) return;
+        
+        const btn = document.querySelector('.discard-btn');
+        const originalText = btn.textContent;
+        btn.textContent = 'Reverting...';
+        btn.disabled = true;
+
+        try {
+            for (const section in changes) {
+                for (const option in changes[section]) {
+                    const originalValue = (originalConfig[section] && originalConfig[section][option] !== undefined) 
+                        ? originalConfig[section][option] 
+                        : null;
+                    
+                    if (originalValue !== null) {
+                        console.log(`Reverting ${section}.${option} to ${originalValue}`);
+                        await saveConfig(section, option, originalValue, 'result');
+                    }
+                }
+            }
+            localStorage.removeItem(PENDING_CHANGES_KEY);
+            // Refresh the settings UI to show the reverted values
+            const settingsView = document.getElementById('settingsView');
+            if (settingsView.classList.contains('active')) {
+                initializeSettingsViews();
+            }
+            updatePendingChangesUI();
+            alert('All changes successfully reverted in the config file.');
+        } catch (e) {
+            alert('Error during revert: ' + e);
+        } finally {
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }
+    }
+
+    /* ── Markdown renderer ─────────────────────────────────────────── */
+    function escMd(text) {
+      return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function processInline(text) {
+      // Escape HTML first, then apply inline formatting
+      text = escMd(text);
+      text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+      text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+      text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+      return text;
+    }
+    function renderMarkdown(md) {
+      const lines = md.split('\n');
+      let html = '';
+      let inCode = false, inList = false, inOList = false, inTable = false, tableHasHead = false;
+      let para = '';
+
+      const flushPara = () => {
+        if (para.trim()) { html += `<p>${processInline(para.trim())}</p>\n`; para = ''; }
+      };
+      const closeUList = () => { if (inList)  { html += '</ul>\n'; inList = false; } };
+      const closeOList = () => { if (inOList) { html += '</ol>\n'; inOList = false; } };
+      const closeList  = () => { closeUList(); closeOList(); };
+      const closeTable = () => {
+        if (inTable) { html += '</tbody></table>\n'; inTable = false; tableHasHead = false; }
+      };
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        // Code fence
+        if (/^```/.test(line)) {
+          if (inCode) { html += '</code></pre>\n'; inCode = false; }
+          else { flushPara(); closeList(); closeTable(); html += '<pre><code>'; inCode = true; }
+          continue;
+        }
+        if (inCode) { html += escMd(line) + '\n'; continue; }
+
+        // Headings
+        const hm = line.match(/^(#{1,3}) (.+)/);
+        if (hm) {
+          flushPara(); closeList(); closeTable();
+          const lvl = hm[1].length;
+          html += `<h${lvl}>${processInline(hm[2])}</h${lvl}>\n`;
+          continue;
+        }
+
+        // Horizontal rule
+        if (/^---+$/.test(line.trim())) {
+          flushPara(); closeList(); closeTable();
+          html += '<hr>\n';
+          continue;
+        }
+
+        // Table rows
+        if (/^\|/.test(line)) {
+          closeList();
+          if (!inTable) { flushPara(); html += '<table>\n'; inTable = true; }
+          const cells = line.split('|').slice(1, -1).map(c => c.trim());
+          if (!tableHasHead) {
+            html += '<thead><tr>' + cells.map(c => `<th>${processInline(c)}</th>`).join('') + '</tr></thead>\n<tbody>\n';
+            tableHasHead = true;
+            i++; // skip separator
+          } else if (!cells.every(c => /^[-:]+$/.test(c))) {
+            html += '<tr>' + cells.map(c => `<td>${processInline(c)}</td>`).join('') + '</tr>\n';
+          }
+          continue;
+        }
+        if (inTable) { closeTable(); }
+
+        // Blockquote
+        const bq = line.match(/^> (.+)/);
+        if (bq) {
+          flushPara(); closeList();
+          html += `<blockquote><p>${processInline(bq[1])}</p></blockquote>\n`;
+          continue;
+        }
+
+        // Unordered list
+        const ul = line.match(/^[-*] (.+)/);
+        if (ul) {
+          flushPara();
+          if (!inList) { closeOList(); html += '<ul>\n'; inList = true; }
+          html += `<li>${processInline(ul[1])}</li>\n`;
+          continue;
+        }
+
+        // Ordered list
+        const ol = line.match(/^\d+\. (.+)/);
+        if (ol) {
+          flushPara();
+          if (!inOList) { closeUList(); html += '<ol>\n'; inOList = true; }
+          html += `<li>${processInline(ol[1])}</li>\n`;
+          continue;
+        }
+
+        if (inList || inOList) { closeList(); }
+
+        // Blank line
+        if (line.trim() === '') { flushPara(); continue; }
+
+        para += (para ? ' ' : '') + line;
+      }
+
+      flushPara();
+      if (inCode)  html += '</code></pre>\n';
+      closeList();
+      closeTable();
+      return html;
+    }
+
+    const _manualCache = {};
+    async function loadManual(name) {
+      if (_manualCache[name]) return _manualCache[name];
+      const resp = await fetch(`/manual/manual-${name}.md`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const text = await resp.text();
+      _manualCache[name] = text;
+      return text;
+    }
+
+    async function showManual(name) {
+      const loadingEl = document.getElementById(`manual-${name}-loading`);
+      const bodyEl = document.getElementById(`manual-${name}-body`);
+      if (!bodyEl || bodyEl.innerHTML) { if (loadingEl) loadingEl.style.display = 'none'; return; }
+      try {
+        const md = await loadManual(name);
+        if (loadingEl) loadingEl.style.display = 'none';
+        bodyEl.innerHTML = renderMarkdown(md);
+      } catch (e) {
+        if (loadingEl) loadingEl.textContent = `Failed to load manual: ${e.message}`;
+      }
+    }
+
+    function initializeHelpView() {
+      const tabBtns = document.querySelectorAll('.manual-tab-btn');
+      tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const target = btn.dataset.manual;
+          tabBtns.forEach(b => b.classList.remove('active'));
+          document.querySelectorAll('.manual-content').forEach(c => c.classList.remove('active'));
+          btn.classList.add('active');
+          const contentEl = document.getElementById(`manual-${target}`);
+          if (contentEl) contentEl.classList.add('active');
+          showManual(target);
+        });
+      });
+      // Default to student guide in student mode, assistant guide in TA mode
+      const defaultManual = isTaMode ? 'assistant' : 'student';
+      const assistantTabBtn = document.querySelector('.manual-tab-btn[data-manual="assistant"]');
+      const studentTabBtn = document.querySelector('.manual-tab-btn[data-manual="student"]');
+      const assistantContent = document.getElementById('manual-assistant');
+      const studentContent = document.getElementById('manual-student');
+      if (!isTaMode) {
+        if (assistantTabBtn) { assistantTabBtn.classList.remove('active'); assistantTabBtn.style.display = 'none'; }
+        if (studentTabBtn) studentTabBtn.classList.add('active');
+        if (assistantContent) assistantContent.classList.remove('active');
+        if (studentContent) studentContent.classList.add('active');
+      }
+      showManual(defaultManual);
+    }
+
+    /* ── TA Role System ──────────────────────────────────────────────── */
+    function setTaMode(enabled) {
+      isTaMode = enabled;
+      document.querySelectorAll('.ta-tab').forEach(btn => {
+        btn.style.display = enabled ? '' : 'none';
+      });
+      const lockBtn = document.getElementById('ta-lock-btn');
+      if (lockBtn) {
+        lockBtn.textContent = enabled ? '🔓 TA Mode' : '🔒 TA Login';
+        lockBtn.classList.toggle('ta-active', enabled);
+      }
+      const assistantTabBtn = document.querySelector('.manual-tab-btn[data-manual="assistant"]');
+      if (assistantTabBtn) assistantTabBtn.style.display = enabled ? '' : 'none';
+      if (!enabled) {
+        if (['settingsView', 'wifiView', 'debugView'].includes(currentView)) activateView('liveView');
+        if (currentView === 'helpView') {
+          const studentBtn = document.querySelector('.manual-tab-btn[data-manual="student"]');
+          if (studentBtn) studentBtn.click();
+        }
+      }
+    }
+
+    function openTaModal() {
+      const modal = document.getElementById('ta-modal');
+      modal.style.display = 'flex';
+      document.getElementById('ta-password-input').value = '';
+      document.getElementById('ta-error').textContent = '';
+      setTimeout(() => document.getElementById('ta-password-input').focus(), 50);
+    }
+
+    function closeTaModal() {
+      document.getElementById('ta-modal').style.display = 'none';
+    }
+
+    async function tryTaLogin() {
+      const password = document.getElementById('ta-password-input').value;
+      const errorEl = document.getElementById('ta-error');
+      try {
+        const resp = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          sessionStorage.setItem(TA_MODE_KEY, '1');
+          setTaMode(true);
+          closeTaModal();
+        } else {
+          errorEl.textContent = 'Incorrect password.';
+        }
+      } catch (e) {
+        errorEl.textContent = 'Auth error: ' + e.message;
+      }
+    }
+
+    function initializeTaMode() {
+      if (!HAS_TA_PASSWORD) {
+        // No password configured — always show everything (backwards-compatible)
+        isTaMode = true;
+        document.getElementById('ta-lock-btn').style.display = 'none';
+        return;
+      }
+      setTaMode(sessionStorage.getItem(TA_MODE_KEY) === '1');
+    }
+
+    function initializeTaListeners() {
+      const lockBtn = document.getElementById('ta-lock-btn');
+      if (lockBtn) lockBtn.addEventListener('click', () => {
+        if (!HAS_TA_PASSWORD) return;
+        isTaMode ? (sessionStorage.removeItem(TA_MODE_KEY), setTaMode(false)) : openTaModal();
+      });
+      document.getElementById('ta-login-btn').addEventListener('click', tryTaLogin);
+      document.getElementById('ta-cancel-btn').addEventListener('click', closeTaModal);
+      document.getElementById('ta-password-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') tryTaLogin();
+      });
+      document.getElementById('ta-modal').addEventListener('click', e => {
+        if (e.target === document.getElementById('ta-modal')) closeTaModal();
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        try {
+            captureOriginalConfig();
+            initializeStaticConfigUI();
+            initializeNavbar();
+            initializeTaMode();
+            initializeTaListeners();
+            initializeSettingsViews();
+            setupCalibrationListeners();
+            initializeHelpView();
+            updatePendingChangesUI(); // Load existing changes from localStorage
+            console.log("Static UI, Navbar, Listeners and views initialized");
+        } catch (e) {
+            console.error("Failed to initialize views/listeners:", e);
+        }
+
+        // Start polling loop (2 seconds)
+        pollStatus();
+        setInterval(pollStatus, 2000);
+        console.log("Polling started");
+    });
+  </script>
+</body>
+</html>

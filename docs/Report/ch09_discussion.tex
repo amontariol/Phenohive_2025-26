@@ -1,0 +1,77 @@
+﻿\chapter{Discussion}
+\label{ch:discussion}
+
+\begingroup
+\setlength{\parskip}{0.6em}
+
+This objective of this chapter is to examine the implementation against its stated objectives, identifies what holds up under scrutiny, where the gaps remain, and what aspects require more attention.
+
+\section{Revisiting the thesis' original objectives}
+
+All three original objectives were met. The architecture became much clearer once the code was rewritten into four bounded source packages behind a factory-based sensor abstraction. Sensing quality came from the WELCOME-lab calibrations, which corrected a roughly 25\,nm TCS3448 channel shift and brought down environmental factor uncertainty down. And deployment resilience held up on real hardware, the station handles out 48-hour disconnections without losing data and reaches live Grafana data in under five minutes from first boot.
+
+\section{Limits of the current implementation}
+
+\subsection{Calibration validity and reproducibility}
+
+The environmental and spectral calibrations were only performed once on a single station at the WELCOME lab. For a platform that will eventually include around 20 units, that creates a few problems.
+
+The TCS3448's spectral response is not perfectly uniform across all manufacturing batches. This means that the roughly 25\,nm empirical shift that's documented in Chapter~\ref{ch:data-acquisition} could differ between individual sensors, but the current calibration applies the same per-channel scale factors to every unit. For rigorous spectral comparisons across student groups, each sensor would need its own monochromator sweep.
+
+The SHT35 calibration also only relied ona single reference which means that it carries the same risk. The factory calibration is very good. Still, the 0.1--0.3\,°C offset seen during validation hints that some units may drift further than others. A batch calibration against a high-precision reference like the one used in the WELCOME lab would ideally confirm that every station are within an acceptable margin.
+
+\subsection{Scale and multi-station validation}
+
+The initial evaluation ran with two stations. One physical station with real hardware and one Docker-based mock. The classroom-scale load test in Section~\ref{sec:load-test} pushed that to the full targeted number by using one physical plus 19 mock stations. The write proxy, InfluxDB, and the auto-provisioning service all were able to handle the 20 concurrent stations pushing data with no data loss and no provisioning failures.
+
+Two questions however still remain open. The first is how the auto-provisioning service performs under sustained load, which fires on the order of 100 Grafana API calls per 60-second sync cycle at full cohort size. The second is cardinality over longer horizons: 14 spectral channels per station at a 10-minute publish interval add up to roughly $20 \times 6 \times 24 \times 30 = 86\,400$ data points per channel per month across the cohort (stations × writes/hour × hours/day × days/month). The 60\,s publish rate in the load test stood in for heavier write pressure than the default 600\,s, and nothing went wrong during the test window, but a full month of real data from 20 stations has not been benchmarked at production intervals.
+
+\subsection{Networking and connectivity assumptions}
+
+The station currently relies on the Tailscale VPN to reach the central server through restrictive networks. Tailscale is a commercial service, so if it goes down, stations stay offline until it recovers. The offline replay queue keeps the data safe, but students would lose live dashboard updates during such an outage. For a large deployment, like the one this thesis aims to support, cost is a factor too. The self-hosted alternative, Headscale, settles both concerns, but requires an infrastructure configuration to be able to run it.
+
+\subsection{Camera pipeline}
+
+The vision pipeline is inherited from \textcite{colinet2025} and was not re-evaluated here. A threading fix resolved the blocking regression introduced by the single-threaded capture design, but the PlantCV segmentation and its accuracy under varied indoor lighting was not re-tested.
+
+\section{Pedagogical fitness}
+
+The central pedagogical question (whether a student in the LBIR1251 course can take the numbers from their dashboard and use them to reason about stomatal conductance, phytochrome signalling, or water balance) is not answered by this thesis. PhenoHive has not yet been deployed in a real LBIR1251 class, and no student learning outcomes have been measured. 
+
+The sensor suite meets the preconditions that are necessary for the type of analysis conducted in the LBIR1251 course, but whether students can reliably translate the data into correct physiological conclusions is an open empirical question.
+
+\paragraph{What remains a hypothesis (to be tested).}
+Three things stay hypothetical. First is whether students can read this data and draw correct physiological conclusions. Second is whether the better data quality changes how they design experiments. And third is whether the lower hardware friction buys them more time on analysis instead of troubleshooting. Settling them needs a structured evaluation with real student groups, ideally comparing the quality of experimental analysis between groups. This as the single most important next step.
+
+\section{Future work}
+\label{sec:future-work}
+
+\paragraph{Per-station spectral calibration.}
+Calibrating the TCS3448 sensor against the monochromator took about two hours including the time it took to setup. Automating that sweep with the DOPES library \parencite{dopes}, which already provides a Python interface for the CM110 and power meter, and writing a script to compute the per channel offsets from the resulting dataset would greatly reduce the calibration time. Each station would then be able to carry its own characterization instead of sharing a single one, making the spectral comparisons across student groups even more defensible and precise.
+
+\paragraph{Automated calibration drift monitoring.}
+A lightweight software check on the scale baseline could flag when the resting mass drifts more than what normal plant growth or evaporation would explain. This would allow the TA to see a warning before the student even notices the readings are off.
+
+\paragraph{Migration to Headscale.}
+Swapping out the Tailscale platform for a self-hosted Headscale instance on the UCLouvain servers allows for removing the commercial dependency without touching the station firmware. This would be a one-time infrastructure job that would make the platform considerably more self-reliant and secure.
+
+\paragraph{Soil moisture and temperature sensing.}
+Soil moisture and temperature were dropped from this thesis for time and scope reasons, even though these metrics both feed straight into the course's material. Adding a sensor of that class through the existing factory pattern is very manageable. The real work would rely in calibrating it and presenting the data at the right level for the class.
+
+\paragraph{CO\textsubscript{2} monitoring.}
+A CO\textsubscript{2} sensor would provide a direct view of net photosynthetic activity that no current channel gives. The main factor that keeps it from being added is cost as a calibrated Non-Dispersive Infrared (NDIR) sensor that stays reliable in an uncontrolled environment costs more than any of the I$^2$C sensors already in the suite.
+
+\paragraph{Month-long evaluation.}\label{sec:future-work-month}
+PhenoHive has yet to run through an actual LBIR1251 class. A structured evaluation, measuring student engagement, report quality and conceptual understanding against a comparison group on the traditional protocols, would supply the evidence needed to judge whether the platform really changes and improves how students learn. That study should follow the first real deployment.
+
+\section{Reflection on the development process}
+
+Working on the third generation meant deciding which open problems were worth the remaining effort. The earlier theses had already proved that the hardware was feasible and that the data is useful. The main danger this time was scope creep, adding more and more features onto a codebase that was already hard to maintain would've been problematic.
+
+Refactoring first paid off in a concrete way when the monochromator sweep turned up the channel-mapping error in the TCS3448, the fix was pretty easy as it only required a simple configuration-file edit, because the sensor abstraction was already clean. The 48-hour disconnection test was a similar story. The local-first persistence model behaved exactly as designed, and the buffered records flushed cleanly once the network connectivity returned. Both outcomes confirmed that the choices that were made were the right ones.
+
+One configuration fault ended up proving that point as well. The InfluxDB write URL was mistakenly pointing at the station's loopback address instead of the VM's Tailscale address. This opened up a one-hour data gap. The offline queue caught every record during that time. After fixing the URL over SSH, the system restored the write path at once and the local archive had worked as a real safety net under an actual configuration error because all the data that was gathered during the outage was pushed at the very next cycle.
+
+Altogether, the development process was a good example of how to balance refactoring and feature development, and how to design for failure in a way that makes the system resilient to the inevitable mistakes and oversights that happen during development.
+\endgroup
+

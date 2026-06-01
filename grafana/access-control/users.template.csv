@@ -1,0 +1,4 @@
+username,password,name,email,teams
+alice_st01,change-me-1,Alice Student,alice@example.edu,phenohive_station_01;phenohive_students
+bob_st01,change-me-2,Bob Student,bob@example.edu,phenohive_station_01;phenohive_students
+ta_01,change-me-ta,Teaching Assistant,ta@example.edu,phenohive_assistants

@@ -1,0 +1,177 @@
+﻿\chapter{Storage, visualization and access control}
+\label{ch:storage}
+
+Two constraints drive the storage and access-control design. The edge nodes run unattended in student homes and face unstable connectivity conditions, so local storage must work independently of network availability. All twenty stations write to the same InfluxDB instance, so the schema must enforce per-group isolation at the query level, not just at the dashboard level. This chapter describes both these things. The local-first persistence model on the edge side, and the InfluxDB schema and multi-tenant access-control model on the server side.
+
+\section{Edge storage and local caching}
+
+The edge runtime keeps two copies. Every measurement first goes into local storage before the station ever tries to push it upstream, so a network outage cannot lose data. This follows the local-buffer pattern that production IoT systems use wherever connectivity is unstable \parencite{ruralegehealth2026}.
+
+\subsection{Flat-file CSV logging}
+
+On the actual device, the long term backup solution is a simple csv file used as a log. The \texttt{DataManager} python script is what appends each measurement row to the file. Picking CSV over a local SQLite database was intentional. If a power cut interrupts a write, it can corrupt the database file. And to read a CSV you can just insert the SD card into any computer, with no database tooling or special knowledge in the way.
+
+\subsection{Offline JSONL caching queue}
+
+When the central InfluxDB is offline or unreachable, the device has to buffer its data so none is lost. Because of the fact that an in-memory queue would vanish on power loss, the station instead keeps a persistent retry queue in \textbf{JSON Lines (JSONL)} format at \texttt{/opt/phenohive/data/offline\_queue.jsonl}.
+
+A plain JSON array would need rewriting on every addition which is why a JSONL file was used. This is because it just appends each new record as one line so this means that the write cost stays flat however long the queue grows.
+
+\subsection{Synchronization protocol}
+
+The data lifecycle follows the state machine in Figure~\ref{fig:edge-sync-flow}. A new measurement first goes to the local csv file, then to InfluxDB if it's available. If that push fails, then the record is appended to the offline queue and is retried after the next aquisition cycle. This keeps it out of a busy-retry loop which could block the system. On a successful push however, the entire backlog is flushed out in one pass, and the queue now will only contain the valid records that couldn't be pushed.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1.3cm and 0.8cm,
+    block/.style={draw, rounded corners, align=center, text width=3.5cm, minimum height=1.0cm, fill=white, font=\footnotesize},
+    decision/.style={draw, diamond, aspect=2, align=center, text width=2.2cm, fill=white, font=\scriptsize},
+    arrow/.style={-{Latex[length=2.2mm]}, thick}
+]
+% Nodes
+\node[block, fill=blue!5] (acquire) {Sensor Data Acquisition\\(Continuous Loop)};
+\node[block, fill=green!5, below=0.8cm of acquire] (csv) {Atomic Local CSV Append\\(\texttt{measurements.csv})};
+\node[decision, fill=yellow!5, below=1.0cm of csv] (net) {Hub Reachable?};
+\node[block, fill=green!5, right=1.2cm of net, text width=3.2cm] (push) {Push telemetries to InfluxDB};
+\node[decision, fill=yellow!5, below=0.8cm of push, text width=1.8cm] (queue) {Queue\\empty?};
+\node[block, fill=green!5, right=1.0cm of queue, text width=3.0cm] (flush) {Synchronous flush\\(\texttt{offline\_queue.jsonl})};
+\node[block, fill=red!5, left=1.2cm of net, text width=3.2cm] (buffer) {Append single-line JSON to \texttt{offline\_queue.jsonl}};
+\node[block, fill=blue!5, below=2.2cm of net] (sleep) {Sleep until next acquisition cycle};
+
+% Arrows
+\draw[arrow] (acquire) -- (csv);
+\draw[arrow] (csv) -- (net);
+\draw[arrow] (net) -- node[above, font=\scriptsize, xshift=2pt] {Yes} (push);
+\draw[arrow] (net) -- node[above, font=\scriptsize, xshift=-2pt] {No} (buffer);
+\draw[arrow] (push) -- (queue);
+\draw[arrow] (queue) -- node[left, font=\scriptsize] {Yes} (sleep);
+\draw[arrow] (queue) -- node[above, font=\scriptsize] {No} (flush);
+\draw[arrow] (flush) |- (sleep);
+\draw[arrow] (buffer) |- (sleep);
+
+\end{tikzpicture}
+\caption[Edge Node Data Synchronization Flow]{Edge node data synchronization flow. Acquired readings are immediately logged to local flat-file CSV for physical resilience, then routed depending on the state of the network connectivity. Unsent records are written to a persistent JSONL queue file and flushed out on connection restoration.}
+\label{fig:edge-sync-flow}
+\end{figure}
+
+\section{Central database schema and cardinality control}
+
+On the server, InfluxDB handles the centralized time-series storage \parencite{influxdb-docs}. Instead of using tables like a relational database, it lays points out along a time axis, which is a good fit for the high-frequency concurrent writes and time-range queries a fleet of stations throws at it. This choice is carried over from previous theses as it was deemed to still be the best fit for the use case, and it has proven to be robust and performant in practice.
+
+\subsection{Database schema layout}
+
+All PhenoHive telemetry is stored inside a single InfluxDB bucket named \texttt{phenohive} under a unified measurement called \texttt{phenohive\_measurements}. To optimize indexing and search speeds, the points are organized into tags (which are indexed by InfluxDB's Time Series Index (TSI), while the underlying series data is persisted by the TSM engine, a Time-Structured Merge-tree built on LSM-tree principles) and fields (which represent the raw, unindexed numerical time-series values):
+
+\begin{itemize}
+    \item \textbf{Tags (Indexed metadata)}.
+    \begin{itemize}
+        \item \texttt{station\_id}: This is the main logical distinguisher (for example \texttt{01}, \texttt{02}). It allows for routing student queries and for keeping each group's data apart.
+        \item \texttt{hardware\_uuid}: This is a random UUID (RFC~4122 version~4) that's created on first boot and written back to \texttt{config.ini}. This is what associates the physical device to it's corresponding \texttt{station\_id}.
+    \end{itemize}
+    \item \textbf{Fields (Unindexed metrics)}.
+    \begin{itemize}
+        \item Climate values: \texttt{sht35\_air\_temperature\_c} and \texttt{sht35\_air\_humidity\_pct} (calibrated), alongside the raw versions \texttt{sht35\_raw\_temperature\_c} and \texttt{sht35\_raw\_humidity\_pct}.
+        \item Spectral readings: the 14 TCS3448 channel fields (\texttt{tcs3448\_f1}--\texttt{tcs3448\_f8}, \texttt{tcs3448\_fz}, \texttt{tcs3448\_fy}, \texttt{tcs3448\_fxl}, \texttt{tcs3448\_nir}, \texttt{tcs3448\_2x\_vis\_1}, \texttt{tcs3448\_fd\_1}).
+        \item Weight: \texttt{scale\_hx711\_weight\_g} (calibrated mass in grams) and \texttt{scale\_hx711\_weight\_raw} (the raw ADC median).
+    \end{itemize}
+\end{itemize}
+
+\subsection{Series cardinality suppression}
+A classic way to destroy a time-series database is a series cardinality explosion. In InfluxDB a series key is the measurement name, tag set and field keys taken together. Storing high-cardinality values as tags, things like free-form strings, dynamic error logs or timestamp markers causes the engine to have to mint a fresh index entry for every point. This leads to memory use ballooning and queries slowing down to a crawl.
+
+In order to try and remove the possibility of a cardinality explosion, the \texttt{DataManager} instead will serialize the InfluxDB points by using a strict filtering scheme:
+\begin{enumerate}
+    \item It checks the type of each key-value pair in the telemetry payload.
+    \item Only the pre-approved keys (\texttt{station\_id} and \texttt{hardware\_uuid}) are written as indexed tags. All other keys are written as unindexed fields.
+    \item Boolean values are cast to floats.
+    \item Any unstructured diagnostic texts and high-cardinality strings are explicitly discarded from the database write-path. this is done because they are already written to the local CSV on the SD card, so they remain available for offline forensics without cluttering the central database.
+\end{enumerate}
+
+
+\section{Multi-tenant access control and security}
+
+Keeping the groups apart is critical to the educational aspect. A student in Group~1 shouldn't be able to view or query Group~2's station. The TAs, on the other hand, need to be able to see the whole fleet and have access to every dashboard and all the data.
+
+A two-layer security model enforces this isolation. It does this by working on both the Grafana permission layer and the InfluxDB query layer.
+
+\subsection{Declarative team-based permissions}
+
+Grafana's built-in team and folder permission structures \parencite{grafana-docs} are used as the primary authorization layer (Figure~\ref{fig:access-control-topology}). This configuration is defined through simple CSV configuration files located in the repository under \texttt{grafana/access-control/}:
+
+\begin{itemize}
+    \item \texttt{teams.csv}: This lists the available teams (e.g., \texttt{phenohive\_station\_01}, \texttt{phenohive\_assistants}).
+    \item \texttt{users.local.csv}: This maps out the individual students and TA logins to their respective teams.
+    \item \texttt{dashboard\_permissions.csv}: This is what links each specific dashboards to their permitted teams.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    level 1/.style={sibling distance=7.6cm, level distance=1.5cm},
+    level 2/.style={sibling distance=3.8cm, level distance=1.5cm},
+    every node/.style={draw, rounded corners, align=center, font=\footnotesize, fill=white},
+    arrow/.style={-{Latex[length=2.2mm]}, thick}
+]
+\node[fill=blue!10] (root) {Grafana Access Control System}
+    child { node[fill=green!10] (f1) {Folder: \texttt{Station\_01}}
+        child { node[fill=white] (d1) {Dashboard\\(Station 01 View)} }
+        child { node[fill=yellow!10] (t1) {Authorized Team:\\\texttt{phenohive\_station\_01}}
+            child { node[fill=purple!5] (u1) {Student Group 1\\(\texttt{student01})} }
+        }
+    }
+    child { node[fill=green!10] (f2) {Folder: \texttt{Station\_02}}
+        child { node[fill=white] (d2) {Dashboard\\(Station 02 View)} }
+        child { node[fill=yellow!10] (t2) {Authorized Team:\\\texttt{phenohive\_station\_02}}
+            child { node[fill=purple!5] (u2) {Student Group 2\\(\texttt{student02})} }
+        }
+    };
+
+% Global assistants team
+\node[draw, dashed, fill=red!5, right=4.2cm of root, yshift=-0.8cm] (assist) {Teaching Assistants Team\\\texttt{phenohive\_assistants}};
+\node[draw, dashed, fill=purple!5, below=0.6cm of assist] (uassist) {TAs};
+
+\draw[arrow, dashed, red] (assist) -- (f1);
+\draw[arrow, dashed, red] (assist) -- (f2);
+\draw[arrow] (uassist) -- (assist);
+
+\end{tikzpicture}
+\caption[Grafana Team-Based Permission Topology]{Logical topology of Grafana team-based permission boundaries. Each student group maps to one station folder with one assigned user. The Teaching Assistants team has fleet-wide dashboard access.}
+\label{fig:access-control-topology}
+\end{figure}
+
+A dedicated Python script called \texttt{sync\_grafana\_access.py} reads these CSV files, calls the Grafana HTTP API, and reconciles the live system to match. It runs every 60 seconds. This allows to add a student to \texttt{users.local.csv} and will lead to the script provisioning the account with an initial password derived from the station ID (intended to be changed by the student on first login), assigning them to their team and finally removing the default viewer rights from every other station folder.
+
+\subsection{Query-level isolation}
+
+A misconfigured or bypassed Grafana permission rule could allow a student to reach another station's dashboard. To prevent any permission bypass from leaking data, a second isolation layer is enforced at the query level.
+
+Every student dashboard is generated as an independent JSON template instance. During the provisioning phase, the auto-provisioning engine clones the master template and hardcodes the station identifier into every Flux query's filter block:
+\begin{verbatim}
+|> filter(fn: (r) => r.station_id == "01")
+\end{verbatim}
+Because the dashboard doesn't have any global variables or dynamic dropdown menus allowing students to select different IDs, the browser has no way to request data from other stations. Even if a student inspects the network traffic and captures the raw Flux queries, the credentials associated with their user role restrict them from altering the query parameters on the server preventing any cross-station data access at the query level.
+
+\subsection{Central fleet administration}
+
+While students operate in isolated groups, TAs require a centralized administration panel to be able to oversee the entire station fleet. The \textbf{Grafana Admin Panel} dashboard provides TAs with:
+\begin{itemize}
+    \item \textbf{Heartbeat indicators}. A color-coded status panel showing ``UP'' or ``DOWN'' for each station. The status is driven by a Flux query that checks whether the station's \texttt{hardware\_uuid} tag has produced any measurement in the preceding 60-minute window:
+\begin{verbatim}
+from(bucket: "phenohive")
+  |> range(start: -1h)
+  |> filter(fn: (r) => r._measurement == "phenohive_measurements")
+  |> filter(fn: (r) => r.hardware_uuid == "<uuid>")
+  |> count()
+\end{verbatim}
+    A non-zero count maps to ``UP'' (green) while zero or no series maps to ``DOWN'' (red). This one-hour window is a deliberate choice because it tolerates the default 10-minute publish interval plus possible network errors without generating false alerts, while still flagging potetial problematic stations.
+    \item \textbf{Raw logging table}. This is just one single unified table that shows the latest records from every active station. Each row contains the station ID, hardware UUID, last-seen timestamp and the last published sensor metrics(temperature, humidity, light and weight). This allows a TA to get a health check on the entire fleet of stationswithout having to open up a single dashboard.
+\end{itemize}
+
+The two panels are a deliberately minimal (MVP) admin interface. They are enough for a TA to confirm each station is alive and data is flowing.
+
+
+\subsection{Data privacy}
+
+The data PhenoHive collects falls under GDPR \parencite{gdprArt6}. It is nothing but environmental sensor readings tagged with a station identifier, with no personal identifiers and no location data. It lives on the UCLouvain VM, is reachable only by the TAs and the group it belongs to and is processed under Article~6(1)(e) for educational research.
+

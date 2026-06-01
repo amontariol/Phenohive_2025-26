@@ -1,0 +1,192 @@
+\chapter{Station Assembly and Deployment Guide}
+\label{ch:appendix-deployment-guide}
+
+This appendix is a step-by-step reference for a TA or developer who needs to build and commission a new PhenoHive station from scratch. It covers hardware assembly, image build, and first-boot verification. The UCLouvain server-side infrastructure (InfluxDB, Grafana, auto-provisioning) is assumed to already be running; a brief setup reference is included at the end.
+
+\section{Prerequisites}
+
+Before starting, the following items should be ready:
+\begin{itemize}
+    \item All components listed in the Bill of Materials (Appendix~\ref{ch:appendix-bom}).
+    \item A microSD card reader.
+    \item A Linux machine to build the golden image (the build script requires \texttt{losetup}, \texttt{chroot} and \texttt{qemu-user-static}).
+    \item SSH access to the UCLouvain VM and an admin InfluxDB token.
+    \item A Tailscale account with admin right and a reusable pre-auth key generated from the Tailscale admin console.
+    \item A 3D-printed enclosure (STL files in \texttt{docs/casing/} of the repository).
+    \item The PhenoHive repository cloned locally.
+\end{itemize}
+
+\section{Hardware assembly}
+
+Wire the components following the schematic in Figure~\ref{fig:wiring-schematic} (Appendix~\ref{sec:appendix-wiring}). The key connections are summarised below.
+
+\begin{itemize}
+    \item \textbf{SHT35 and TCS3448} both share the I$^2$C bus on GPIO~2 (SDA) and GPIO~3 (SCL). They both run at 3.3\,V.
+    \item \textbf{HX711 ADC} DOUT on GPIO~5, PD\_SCK on GPIO~6 and the breakout is powered at 3.3\,V.
+    \item \textbf{KY-019 relay} (LED strip control) DATA goes on GPIO~23 (BCM numbering) and is powered at 5\,V.
+    \item \textbf{Camera module}: connected via the CSI ribbon cable to the Raspberry Pi Zero~2~W.
+    \item \textbf{Power input}: a 5\,V / 3\,A Micro-USB power supply to the Raspberry Pi micro-USB power port.
+\end{itemize}
+
+Use Wago connectors to distribute the 3.3\,V, 5\,V and GND rails cleanly without needing to solder anything. All breakout boards can be set on their mounting pads and then close the enclosure lid.
+
+\section{Prepare configuration and build the image}
+
+All station-specific values are integrated into the image at build time. This means that no SD card editing or SSH access is required after flashing.
+
+\paragraph{Create the configuration files} In the \texttt{dietpi/} directory of the repository, create three plain-text files (one value per file, no trailing whitespace):
+
+\begin{center}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{File} & \textbf{Content} \\
+\hline
+\texttt{dietpi/phenohive\_server.txt} & Tailscale IP of the UCLouvain VM (e.g.\ \texttt{100.117.27.12}) \\
+\texttt{dietpi/phenohive\_token.txt} & InfluxDB write token \emph{(gitignored --- do not commit)} \\
+\texttt{dietpi/phenohive\_station\_id.txt} & Unique station identifier (e.g.\ \texttt{01}, \texttt{02}) \\
+\hline
+\end{tabular}
+\end{center}
+
+The build script reads these files and writes the values directly into \texttt{/opt/phenohive/.env} and \texttt{config.ini} inside the image.
+
+\paragraph{Requirements} The build script (\texttt{dietpi/build\_image.sh}) requires a Linux host with:
+\begin{itemize}
+    \item \texttt{qemu-user-static} and \texttt{binfmt} support (for cross-architecture chroot).
+    \item Standard utilities: \texttt{losetup}, \texttt{parted}, \texttt{e2fsck}, \texttt{resize2fs}, \texttt{rsync}.
+    \item Internet access from within the chroot (for \texttt{apt-get} and the Tailscale repository).
+\end{itemize}
+
+\paragraph{Obtain the base image} Download the latest DietPi ARMv8 image for Raspberry Pi Zero~2~W from \url{https://dietpi.com/} and place it in the \texttt{dietpi/} directory. The script auto-detects any \texttt{DietPi*.img.xz} file there.
+
+\paragraph{Run the build} From the repository root:
+\begin{verbatim}
+sudo ./dietpi/build_image.sh --tailscale-key tskey-auth-XXXXX
+\end{verbatim}
+
+Pass a reusable pre-auth key from the Tailscale admin console. The script performs the following steps inside a chroot of the base image:
+\begin{enumerate}
+    \item Installs the system packages: NetworkManager, comitup (captive-portal Wi-Fi onboarding), Tailscale, \texttt{python3-picamera2}, I$^2$C tools and Avahi.
+    \item Enables \texttt{NetworkManager}, \texttt{comitup}, \texttt{avahi-daemon}, \texttt{tailscaled} and \texttt{phenohive} all as systemd services.
+    \item Bakes the PhenoHive source tree into \texttt{/opt/phenohive/}, creates a Python virtual environment and installs all dependencies.
+    \item Writes \texttt{.env} with the server IP and token read from the local configuration files, and \texttt{config.ini} with the station ID.
+    \item Embeds the Tailscale pre-auth key for automatic first-boot authentication.
+    \item Enables I$^2$C and the camera module via \texttt{config.txt} overlays and configures a fully unattended DietPi first boot.
+\end{enumerate}
+
+The output is called \texttt{dietpi/phenohive.img}, is approximately 5\,GB larger than the base image and build time is 20--40 minutes depending on network speed and host CPU.
+
+\section{Flash the image}
+
+Flash \texttt{dietpi/phenohive.img} to the microSD card. On Windows use Raspberry Pi Imager or Balena Etcher. On Linux:
+\begin{verbatim}
+dd if=dietpi/phenohive.img of=/dev/sdX bs=4M status=progress
+\end{verbatim}
+
+Insert the card into the Raspberry Pi and power it on. No further preparation of the SD card is needed.
+
+\section{Wi-Fi setup via comitup}
+
+Because no Wi-Fi credentials are stored in the image, the station cannot reach any network on first boot. The comitup service handles this automatically.
+
+\begin{enumerate}
+    \item Power on the station. After approximately 30 seconds, a Wi-Fi hotspot named \texttt{comitup-XXXX} appears (where XXXX is derived from the device MAC address).
+    \item On a phone or laptop, connect to that hotspot. A captive portal opens automatically. If it does not, open a browser and navigate to \texttt{http://comitup.local}.
+    \item Select the target Wi-Fi network from the list, enter the password and confirm. The hotspot disappears and the station joins the network.
+    \item The station reboots automatically. On the second boot it authenticates to Tailscale using the baked-in key and the PhenoHive service starts.
+\end{enumerate}
+
+\textbf{Subsequent network changes:} if the station cannot find its saved network, comitup automatically re-broadcasts the hotspot. Repeat steps 2--3 to re-configure.
+
+\section{Verify the service}
+
+Once the station is on the network and Tailscale is authenticated, confirm the service is running. 
+There are two ways to do this. You can either check the logs directly on the Pi via SSH, or monitor the incoming data on Grafana or the debug UI (next step).
+
+To SSH into the Pi (via its Tailscale IP, available in the Tailscale admin console):
+
+\begin{verbatim}
+ssh root@<PI_TAILSCALE_IP>
+Ctrl+C to stop the live log stream.
+systemctl status phenohive
+journalctl -u phenohive -n 60 --no-pager
+\end{verbatim}
+
+The log should show:
+\begin{itemize}
+    \item Sensor initialisation messages (\texttt{SHT35 OK}, \texttt{TCS3448 OK}, etc.).
+    \item An NTP clock synchronisation confirmation.
+    \item A \texttt{Collection cycle started} line after the first collection interval.
+    \item A \texttt{Publishing aggregate record} line after the first publish interval.
+\end{itemize}
+
+If a sensor fails to initialise, the service continues and retries on every subsequent poll cycle. Check the wiring against Figure~\ref{fig:wiring-schematic} if a sensor does not recover.
+
+If the service cannot reach the server, check:
+\begin{itemize}
+    \item \texttt{tailscale status} where both the VM and the station should appear as connected.
+    \item \texttt{/opt/phenohive/.env} verify \texttt{INFLUX\_URL} and \texttt{INFLUX\_TOKEN} were applied correctly.
+    \item That the provisioning files were placed on \texttt{/boot} before the first boot (they are only processed once, if this wasn't done, then reflash the compiled image to the sd card, there is no need to rebuild it entirely).
+\end{itemize}
+
+\section{Scale and Camera calibration}
+
+Open the debug dashboard from any device on the same Tailscale network:
+
+\begin{verbatim}
+http://<PI_TAILSCALE_IP>:8080
+\end{verbatim}
+
+Navigate to the \emph{Calibration} tab to perform both the calibrations:
+
+For the scale:
+\begin{enumerate}
+    \item Place the station on its final surface. Do not put anything on the scale and click on \emph{Confirm: Scale is empty}.
+    \item Place an object with a known mass on the scale, then enter that mass in the \emph{Reference weight (g)} field and click \emph{Calibrate}. The reading should now match the reference.
+    \item You can choose to add an offset correction to the calibration to take the pot's weight into account.
+    \item Remove the calibration weight and place the plant (pot and soil) on the scale. Confirm the reading is plausible.
+\end{enumerate}
+
+For the camera:
+\begin{enumerate}
+    \item Ensure that the station is in its final position and the camera has a clear view of where the plant will be but without the plant in the frame and click on \emph{Capture background}. 
+    \item Use an item in the captured image to compute the pixel-to-cm scale factor then enter the real-world size in cm and it's value in pixels on the image and click \emph{Calibrate}. The computed scale factor is applied to all subsequent recordings and is written to \texttt{config.ini}.
+    
+\end{enumerate}   
+    This captures the current view as Calibration values (\texttt{tare} and \texttt{calibration\_factor}) are written to \texttt{config.ini} immediately and persist across reboots and software updates.
+
+\section{Verify data on Grafana}
+
+Within a few minutes of the first successful data push, the auto-provisioning service on the VM detects the new \texttt{station\_id} tag in InfluxDB and automatically creates:
+\begin{itemize}
+    \item A Grafana team (\texttt{phenohive\_station\_XX}).
+    \item A student user account (\texttt{studentXX}) with an initial password derived from the station ID.
+    \item A dashboard cloned from the master template and filtered to this station.
+\end{itemize}
+
+Log in to Grafana at \texttt{http://100.117.27.12:3000} as \texttt{usr: admin \& pwd: admin12345} and confirm the new dashboard appears. Share the student credentials (\texttt{studentXX} / \texttt{phenohive\_XX}) with the corresponding group.
+
+\section{Optional: setting up the server-side infrastructure}
+
+If the backend stack is not yet running (e.g.\ deploying a new course edition), set it up as follows.
+
+\begin{enumerate}
+    \item SSH into the VM and clone the repository.
+    \item Copy \texttt{.env.example} to \texttt{.env} and set \texttt{INFLUXDB\_INIT\_ADMIN\_TOKEN}, \texttt{GRAFANA\_ADMIN\_PASSWORD} and \texttt{INFLUXDB\_INIT\_PASSWORD}.
+    \item Start the production Docker stack:
+    \begin{verbatim}
+docker compose up -d
+    \end{verbatim}
+    \item Create a scoped InfluxDB write token (append-only to the \texttt{phenohive} bucket) via the InfluxDB web UI on port 8086 (accessible locally on the VM). This is the token that goes into \texttt{phenohive\_token.txt} on each station's SD card.
+    \item Start the auto-provisioning service:
+    \begin{verbatim}
+python scripts/auto_provision_grafana.py
+    \end{verbatim}
+    Register it as a systemd unit for persistence across VM reboots.
+    \item Install Tailscale on the VM and join the PhenoHive tailnet:
+    \begin{verbatim}
+tailscale up --auth-key=<TSKEY-AUTH-...>
+    \end{verbatim}
+\end{enumerate}
+
+Once the VM stack is running, return to Step~2 to build and flash stations.

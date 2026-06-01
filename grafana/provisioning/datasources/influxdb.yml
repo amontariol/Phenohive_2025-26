@@ -1,0 +1,23 @@
+apiVersion: 1
+
+deleteDatasources:
+  - name: influxdb
+    orgId: 1
+
+prune: true
+
+datasources:
+  - name: influxdb
+    uid: influxdb-phenohive
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    isDefault: true
+    editable: true
+    jsonData:
+      version: Flux
+      organization: uclouvain
+      defaultBucket: phenohive
+      tlsSkipVerify: true
+    secureJsonData:
+      token: phenohive-local-dev-token

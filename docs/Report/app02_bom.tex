@@ -1,0 +1,46 @@
+﻿\chapter{Bill of materials and cost analysis}
+\label{ch:appendix-bom}
+
+A primary objective of the PhenoHive project is maintaining a strict hardware budget to allow multi-station laboratory deployments (20+ units). The components were selected to balance precision with cost-efficiency. Table~\ref{tab:bom} details the pricing and sourcing of all components required to build one edge station. By using standard I$^2$C sensors and a Raspberry Pi Zero 2~W, the total hardware cost stays well within the 100--150€ target.
+
+
+\begin{table}[htbp]
+\centering
+\caption[Bill of Materials for One PhenoHive Station]{Bill of Materials (BOM) for a single PhenoHive edge sensor station.}
+\label{tab:bom}
+\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{\textwidth}{|X|p{4cm}|r|}
+\hline
+\textbf{Component Description} & \textbf{Supplier} & \textbf{Approx. Cost (€)} \\
+\hline
+Raspberry Pi Zero 2~W with pre-soldered headers & Standard Retailer & 18.00 \\
+\hline
+Raspberry Pi Camera Module V1.3 (5MP) & Standard Retailer & 15.00 \\
+\hline
+MicroSD Card (32GB, Class 10) & Standard Retailer & 8.00 \\
+\hline
+Micro USB Power Supply (5V, 3A) & Standard Retailer & 10.00 \\
+\hline
+SHT35 Temperature \& Humidity Sensor Breakout & Adafruit / Seeed & 15.00 \\
+\hline
+TCS3448 Spectral Sensor (MikroE Color 21 Click) & MikroElektronika & 30.00 \\
+\hline
+TAL226 Load Cell (or equivalent generic strain gauge) & Generic Retailer & 10.00 \\
+\hline
+HX711 24-bit ADC Breakout Board & SparkFun / Generic & 2.00 \\
+\hline
+AZDelivery KY-019 Single-Channel Relay Module (5\,V) & AZDelivery / Generic & 3.00 \\
+\hline
+Luktix 5\,V COB USB LED Strip (1.5\,m, 4000\,K) & Generic Retailer & 8.00 \\
+\hline
+Wago 221-415 Splicing Connectors (for power distribution) & Hardware Store & 3.00 \\
+\hline
+Prototyping wires and 3D printed chassis & Local fabrication & 15.00 \\
+\hline
+\textbf{Total Estimated Cost} & & \textbf{$\approx$ 137.00} \\
+\hline
+\end{tabularx}
+
+\end{table}
+

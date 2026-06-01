@@ -1,0 +1,37 @@
+﻿\chapter{Introduction}
+\label{ch:introduction}
+
+\begingroup
+\setlength{\parskip}{0.6em}
+
+PhenoHive is a portable phenotyping station built for LBIR1251, the plant biology and physiology course at UCLouvain. One of the things that course tries to do is tie physiological theory to hands-on observation, across topics like water balance, mineral nutrition, photosynthesis and how plants respond to their environment. Traditionally that has meant shared greenhouse space and measurements taken by hand, which caps how much and how freely students can experiment.
+
+Because of the fact that each unit is small enough and is able to run on its own, watching a single plant for weeks and producing data students can relate back to what they see in class. All without the need for a greenhouse or lab bench. A group can design its own experiment, change the conditions, and watch the effects play out close to real time. The limits that are traditionally set by the need to share space and instruments with a large group are lifted. This allows the course to be more flexible, and for students to be more creative than what was previously possible.
+
+
+I came to this project from a long interest in embedded systems, and in how hardware and software actually behave in a real world environment. PhenoHive encompasses a large amount of the computer science curriculum into one place: low-level sensor communication, software structure, data persistence, networked services, visualising results, and keeping all of it alive in the field. The breadth is what made it hard. It is also what made it worth doing.
+
+\textcite{goffinet2024} moved the OS to DietPi \parencite{dietpi}, added a rolling-median filter for the mass readings, and wrote an automated first-boot routine that bootstrapped a local InfluxDB/Grafana instance straight from a preconfigured SD card, showing that a station based on the Raspberry Pi Zero W could run on its own in a teaching setting. \textcite{colinet2025} took that further. The hardware moved from the Zero W to the faster Zero 2W. The PlantCV pipeline was brought up to version 4.6 with automatic calibration and shadow detection, and the InfluxDB/Grafana stack was relocated from a local RPi hotspot to a shared UCLouvain server. Colinet also added a resistive soil-moisture probe read through an MCP3008 ADC and a photoresistor for ambient light, and replaced the enclosure with a compact 3D-printed design.
+\newline By the time I started, the station already worked end to end: it brought up its hardware, took and timestamped measurements, and pushed them to a central dashboard.
+
+Even so, the prototype I inherited had real limitations for sustained classroom use. The software was heavily monolithic, which made it hard to maintain or extend. Measurement quality was uneven too. Mass tracking was solid enough for evapotranspiration work, and the PlantCV camera pipeline \parencite{gehan2017plantcv, plantcv} gave detailed growth indicators, but the air and light sensors were not good enough for any deeper physiological reading. The resistive soil-moisture probe returned a single index with no connection to the atmospheric water-vapor status that a vapor pressure deficit calculation needs. The photoresistor collapsed all incoming light into one lux-like number, so it could not separate the red and far-red bands that drive phytochrome-mediated development. And the platform tended to falter during the long, multi-group home deployments where dropped networks and failing instruments are simply part of normal operation.
+
+My goal was to turn this working prototype into a platform that could be maintained and extended over time. I did not start over. Instead I kept and built on the parts that already worked, and reworked the parts that plainly did not.
+
+The work pursues three objectives.
+
+The first is architectural. The runtime is broken out of its monolithic form into modular components, each responsible for one concern: acquisition, processing, persistence, visualization, and the user interface. Splitting things up this way lowers the maintenance burden and makes it less likely that a teaching assistant (TA) extending the platform will break something elsewhere.
+
+The second concerns sensing quality. Choosing better sensors isn't enough. They have to be calibrated and validated against references. This is why I calibrated the temperature and humidity sensor in a controlled chamber, and characterized the light spectrum with a monochromator. This allows the students to be confident in the data and to interpret it in physiological terms, which is what the course is about.
+
+The third is operational reliability in the field. Any long deployments need the station to be as robust and stable as possible. If a station fails, it compromises the integrity of the student's work. This is why several safeguards were put in place. The station now writes every measurement locally first and now has an offline queue. There is now also an automated access control system that keeps each group's data seperate and private. 
+
+Taken together, these changes move the station from a research prototype toward something that can be reused dependably within LBIR1251. Throughout, I have tried to foreground methodology and the reasoning behind each architectural decision, so that the TAs who come after me extend a clear foundation rather than redesign the system. One part is carried over untouched: the camera-based morphological pipeline, the PlantCV leaf-area analysis, comes from \textcite{colinet2025}. I did not re-evaluate its segmentation accuracy, and it is not a primary contribution here. Improving the vision side is left as future work in Section~\ref{sec:future-work}.
+
+The full source code is publicly available at \url{https://github.com/amontariol/Phenohive_2025-26} and is described in Appendix~\ref{ch:appendix-repository}.
+
+Two linked questions run through the thesis. The first is an engineering research question: \emph{What architectural, metrological, and operational design decisions are required to transform a functional low-cost phenotyping prototype into a platform that delivers calibrated, physiologically interpretable multi-sensor data reliably to 20 concurrent student groups over month-long deployments in uncontrolled environments?} The second turns that into a concrete usability test: \emph{Can a student take a freshly-imaged Raspberry Pi, connect it to any Wi-Fi network, and begin collecting calibrated multi-sensor data on a shared, isolated dashboard within minutes and without any complex setup?} Answering either one takes work at every level of the stack, from calibration through architecture and persistence to deployment, and each level is taken up in the chapters that follow.
+
+\endgroup
+
+
