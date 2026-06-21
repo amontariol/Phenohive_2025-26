@@ -344,7 +344,9 @@ mount --bind /sys "$MNT_ROOT/sys"
 echo "Installing packages inside image rootfs"
 QEMU_IN_CHROOT="/usr/bin/$(basename "$QEMU_BIN")"
 chroot "$MNT_ROOT" "$QEMU_IN_CHROOT" /usr/bin/apt-get update
-chroot "$MNT_ROOT" "$QEMU_IN_CHROOT" /usr/bin/env DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get install -y --no-install-recommends network-manager wpasupplicant comitup curl jq ca-certificates i2c-tools python3-libcamera python3-picamera2 libcamera-apps avahi-daemon
+# rpi-utils provides pinctrl, which the i2c_bus_recovery.sh script uses to
+# bit-bang the I2C bus clock line for bus-stuck recovery on BCM2835.
+chroot "$MNT_ROOT" "$QEMU_IN_CHROOT" /usr/bin/env DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get install -y --no-install-recommends network-manager wpasupplicant iw comitup curl jq ca-certificates i2c-tools rpi-utils python3-libcamera python3-picamera2 libcamera-apps avahi-daemon
 chroot "$MNT_ROOT" "$QEMU_IN_CHROOT" /usr/bin/apt-get clean
 
 echo "Installing Tailscale..."
@@ -376,6 +378,18 @@ plugins=keyfile
 
 [device]
 wifi.scan-rand-mac-address=no
+EOF
+
+# Disable WiFi power-saving fleet-wide. The Pi's onboard Broadcom adapter
+# otherwise dozes when idle and silently drops *inbound* connections
+# (SSH / Tailscale / debug dashboard) until traffic wakes the radio — a
+# frequent cause of "the station fell off Tailscale" in the field. On this
+# NetworkManager-managed image, NM owns the setting, so it must be told here;
+# a bare `iw ... power_save off` would get re-enabled on the next reconnect.
+# wifi.powersave: 2 = disable, 3 = enable, 0 = use-default.
+cat >"$MNT_ROOT/etc/NetworkManager/conf.d/30-wifi-powersave-off.conf" <<'EOF'
+[connection]
+wifi.powersave = 2
 EOF
 
 # Broadcom on Pi can become unstable when P2P/vendor IEs are enabled during AP setup.
@@ -429,6 +443,27 @@ else
   echo "tailscaled.service not found in image — Tailscale may not have installed correctly"
   exit 1
 fi
+
+# Backstop the NetworkManager wifi.powersave setting with a boot-time oneshot
+# that re-asserts power-save OFF directly on the interface, after NM has brought
+# wlan0 up. Backend-independent, so it also covers comitup AP mode and any
+# driver default that re-enables power-save before NM applies its config.
+cat >"$MNT_ROOT/etc/systemd/system/wifi-powersave-off.service" <<'EOF'
+[Unit]
+Description=Disable WiFi power saving on wlan0
+After=NetworkManager.service sys-subsystem-net-devices-wlan0.device
+Wants=sys-subsystem-net-devices-wlan0.device
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'iw dev wlan0 set power_save off'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -sf /etc/systemd/system/wifi-powersave-off.service \
+    "$MNT_ROOT/etc/systemd/system/multi-user.target.wants/wifi-powersave-off.service"
 
 # Ensure old wifi-connect units don't interfere with comitup-based provisioning.
 rm -f "$MNT_ROOT/etc/systemd/system/multi-user.target.wants/wifi-connect.service"
@@ -541,8 +576,17 @@ chroot "$MNT_ROOT" "$QEMU_IN_CHROOT" /bin/rm -rf /root/.cache/pip
 
 echo "Installing systemd services..."
 cp "$SCRIPT_DIR/../infrastructure/systemd/phenohive.service" "$MNT_ROOT/etc/systemd/system/"
-cp "$SCRIPT_DIR/../scripts/wait_for_network.sh" "$MNT_ROOT/opt/phenohive/scripts/"
-chmod +x "$MNT_ROOT/opt/phenohive/scripts/wait_for_network.sh"
+
+# Strip Windows CRLF line endings from all shell scripts.
+# When the repo is edited on Windows, git may commit scripts with CRLF even if
+# .gitattributes requests LF. bash on Linux treats \r as part of the command
+# and fails with "No such file or directory" on the first line.
+find "$MNT_ROOT/opt/phenohive/scripts" -name "*.sh" -exec sed -i 's/\r$//' {} +
+
+# Make all runtime scripts executable. rsync preserves permissions but on
+# Windows hosts git does not store the execute bit, so scripts arrive
+# non-executable and must be chmod'd explicitly here.
+chmod +x "$MNT_ROOT/opt/phenohive/scripts/"*.sh
 
 # Create a boot-time config update script.
 # TAILSCALE_KEY is expanded here by the host shell so it is baked into the image.

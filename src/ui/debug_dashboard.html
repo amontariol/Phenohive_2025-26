@@ -13,6 +13,8 @@
     .view { display: none; }
     .view.active { display: block; }
     .card { background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 14px; margin-bottom: 16px; }
+    .img-frame { width: 100%; aspect-ratio: 4/3; background: #0b1220; border: 1px solid #334155; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+    .img-frame img { width: 100%; height: 100%; object-fit: contain; }
     h1 { margin-top: 0; }
     pre { margin: 0; overflow: auto; white-space: pre-wrap; word-break: break-word; }
     select,
@@ -181,6 +183,7 @@
     <nav class="navbar" aria-label="Dashboard navigation">
       <button type="button" class="nav-btn active" data-view="liveView">Live</button>
       <button type="button" class="nav-btn" data-view="dataView">Data</button>
+      <button type="button" class="nav-btn" data-view="imagesView">Images</button>
       <button type="button" class="nav-btn ta-tab" data-view="settingsView">Settings</button>
       <button type="button" class="nav-btn ta-tab" data-view="wifiView">WiFi</button>
       <button type="button" class="nav-btn" data-view="calibrateView">Calibrate</button>
@@ -287,6 +290,47 @@
         <p class="muted">Time since last sensor capture: <span id="data-capture-age">{{CAPTURE_AGE_TEXT}}</span></p>
         <p class="muted">Estimated time until next capture: <span id="data-next-capture">{{NEXT_CAPTURE_TEXT}}</span></p>
         <pre id="recent-captures-json">{{RECENT_CAPTURES_JSON}}</pre>
+      </section>
+    </section>
+
+    <section id="imagesView" class="view">
+      <section class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+          <h2 style="margin: 0;">Captured Images</h2>
+          <button type="button" id="btn-refresh-images" style="margin: 0; background: #3b82f6; color: white;">↻ Refresh</button>
+        </div>
+        <p class="muted" id="images-status">Loading images…</p>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 4px;">
+          <div>
+            <h3 style="margin: 0 0 8px;">Last Capture</h3>
+            <div class="img-frame">
+              <img id="img-last-capture" src="" alt="Last capture" style="display: none;">
+              <div id="img-last-capture-empty" class="muted">No capture yet</div>
+            </div>
+            <div class="muted" id="img-last-capture-caption" style="margin-top: 6px;">--</div>
+          </div>
+          <div>
+            <h3 style="margin: 0 0 8px;">Background</h3>
+            <div class="img-frame">
+              <img id="img-background" src="" alt="Background reference" style="display: none;">
+              <div id="img-background-empty" class="muted">No background image</div>
+            </div>
+            <div class="muted" style="margin-top: 6px;">Reference background used for shadow removal</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 style="margin-top: 0;">Browse Past Captures</h2>
+        <label class="muted" for="img-select">Select a capture by date and time</label>
+        <select id="img-select">
+          <option value="">— Select a capture —</option>
+        </select>
+        <div class="img-frame" style="margin-top: 12px;">
+          <img id="img-selected" src="" alt="Selected capture" style="display: none;">
+          <div id="img-selected-empty" class="muted">Choose a capture from the list above to view it</div>
+        </div>
+        <div class="muted" id="img-selected-caption" style="margin-top: 6px;"></div>
       </section>
     </section>
 
@@ -712,6 +756,9 @@
         if (currentView === 'dataView') {
           document.getElementById('recent-captures-json').textContent = JSON.stringify(status.recent_captures, null, 2);
         }
+        if (currentView === 'imagesView' && (Date.now() - lastImagesFetch) > 8000) {
+          loadImages();
+        }
 
         // Pulse the status dot
         const pulse = document.getElementById('statusPulse');
@@ -970,6 +1017,110 @@
       }
     }
 
+    /* ── Captured Images Gallery ─────────────────────────────────────── */
+    let imagesData = { captures: [], latest: null, background: null };
+    let imagesOptionSignature = '';
+    let lastImagesFetch = 0;
+
+    async function loadImages(force = false) {
+      const statusEl = document.getElementById('images-status');
+      try {
+        const res = await fetch('/api/images');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        imagesData = data;
+        lastImagesFetch = Date.now();
+
+        // Last capture
+        const lastImg = document.getElementById('img-last-capture');
+        const lastEmpty = document.getElementById('img-last-capture-empty');
+        const lastCap = document.getElementById('img-last-capture-caption');
+        if (data.latest) {
+          if (lastImg.dataset.filename !== data.latest.filename) {
+            lastImg.src = `/images/${encodeURIComponent(data.latest.filename)}`;
+            lastImg.dataset.filename = data.latest.filename;
+          }
+          lastImg.style.display = 'block';
+          lastEmpty.style.display = 'none';
+          lastCap.textContent = data.latest.label;
+        } else {
+          lastImg.style.display = 'none';
+          lastEmpty.style.display = 'block';
+          lastCap.textContent = '--';
+        }
+
+        // Background (cache-busted by mtime so a re-capture shows up)
+        const bgImg = document.getElementById('img-background');
+        const bgEmpty = document.getElementById('img-background-empty');
+        if (data.background) {
+          const bust = data.background.mtime ? `?t=${Math.floor(data.background.mtime)}` : '';
+          const bgUrl = `/images/${encodeURIComponent(data.background.filename)}${bust}`;
+          if (bgImg.dataset.src !== bgUrl) {
+            bgImg.src = bgUrl;
+            bgImg.dataset.src = bgUrl;
+          }
+          bgImg.style.display = 'block';
+          bgEmpty.style.display = 'none';
+        } else {
+          bgImg.style.display = 'none';
+          bgEmpty.style.display = 'block';
+        }
+
+        // Dropdown — only rebuild when the set of captures changes, so an
+        // open selection is not disrupted by the auto-refresh poll.
+        const signature = data.captures.map(c => c.filename).join('|');
+        if (signature !== imagesOptionSignature) {
+          const select = document.getElementById('img-select');
+          const previous = select.value;
+          select.innerHTML = '<option value="">— Select a capture —</option>';
+          for (const c of data.captures) {
+            const opt = document.createElement('option');
+            opt.value = c.filename;
+            opt.textContent = c.label;
+            select.appendChild(opt);
+          }
+          if (previous && data.captures.some(c => c.filename === previous)) {
+            select.value = previous;
+          }
+          imagesOptionSignature = signature;
+        }
+
+        if (statusEl) {
+          const n = data.captures.length;
+          statusEl.textContent = n === 0
+            ? 'No captures found yet.'
+            : `${n} capture${n === 1 ? '' : 's'} available • latest ${data.latest ? data.latest.label : '--'}`;
+        }
+      } catch (err) {
+        if (statusEl) statusEl.textContent = 'Failed to load images: ' + err.message;
+      }
+    }
+
+    function showSelectedImage(filename) {
+      const img = document.getElementById('img-selected');
+      const empty = document.getElementById('img-selected-empty');
+      const cap = document.getElementById('img-selected-caption');
+      if (!filename) {
+        img.style.display = 'none';
+        img.removeAttribute('src');
+        empty.style.display = 'block';
+        cap.textContent = '';
+        return;
+      }
+      img.src = `/images/${encodeURIComponent(filename)}`;
+      img.style.display = 'block';
+      empty.style.display = 'none';
+      const match = imagesData.captures.find(c => c.filename === filename);
+      cap.textContent = match ? match.label : filename;
+    }
+
+    function initializeImagesView() {
+      const select = document.getElementById('img-select');
+      if (select) select.addEventListener('change', () => showSelectedImage(select.value));
+      const refreshBtn = document.getElementById('btn-refresh-images');
+      if (refreshBtn) refreshBtn.addEventListener('click', () => loadImages(true));
+    }
+
     function initializeNavbar() {
       const navButtons = document.querySelectorAll('.nav-btn');
       const views = document.querySelectorAll('.view');
@@ -984,6 +1135,9 @@
         
         // Pause auto-refresh if in settings to avoid losing input focus
         autoRefreshPaused = (viewId === 'settingsView' || viewId === 'wifiView');
+
+        // Load the gallery immediately when its tab is opened
+        if (viewId === 'imagesView') loadImages(true);
 
         // Show/Hide restart button and pending changes
         const restartBtn = document.getElementById('btn-restart-service');
@@ -1570,6 +1724,7 @@
             initializeTaListeners();
             initializeSettingsViews();
             setupCalibrationListeners();
+            initializeImagesView();
             initializeHelpView();
             updatePendingChangesUI(); // Load existing changes from localStorage
             console.log("Static UI, Navbar, Listeners and views initialized");

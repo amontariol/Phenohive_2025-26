@@ -1,4 +1,7 @@
-"""Small debug web UI for runtime and config inspection."""
+"""Small debug web UI for runtime and config inspection.
+
+Serves the dashboard, status/config APIs, and the captured-image gallery.
+"""
 
 from __future__ import annotations
 
@@ -98,7 +101,10 @@ class DebugUIService:
                     self._send_html(service._render_dashboard(status))
                     return
                 if self.path.startswith("/images/"):
-                    self._serve_image(self.path[8:])
+                    # Strip any query string (e.g. cache-busting ?t=123) before
+                    # resolving the file on disk.
+                    requested = self.path[len("/images/"):].split("?", 1)[0]
+                    self._serve_image(requested)
                     return
                 if self.path.startswith("/manual/"):
                     filename = self.path[8:]
@@ -122,6 +128,9 @@ class DebugUIService:
                     return
                 if self.path == "/api/config/editable":
                     self._send_json(service._load_editable_config_dict())
+                    return
+                if self.path == "/api/images":
+                    self._send_json(service._list_capture_images())
                     return
                 self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
 
@@ -481,6 +490,72 @@ class DebugUIService:
         if minutes > 0:
             return f"{minutes}m {seconds}s"
         return f"{seconds}s"
+
+    @staticmethod
+    def _parse_capture_timestamp(stem: str) -> datetime | None:
+        """Parse a capture filename stem (e.g. 2026-06-20T14-30-00Z) to a UTC datetime."""
+        try:
+            parsed = datetime.strptime(stem, "%Y-%m-%dT%H-%M-%SZ")
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=UTC)
+
+    def _list_capture_images(self) -> dict[str, Any]:
+        """List capture images in the image directory, newest first.
+
+        Returns the timestamped captures (parsed from their filenames), the latest
+        capture, and the background image if present. Non-capture files such as
+        skeleton.jpg are ignored because their stem does not parse as a timestamp.
+        """
+        background: dict[str, Any] | None = None
+        rows: list[tuple[datetime, str, str, str, float]] = []
+
+        try:
+            entries = list(self._image_dir.iterdir()) if self._image_dir.exists() else []
+        except OSError:
+            LOGGER.exception("Unable to read image directory %s", self._image_dir)
+            entries = []
+
+        for entry in entries:
+            try:
+                if not entry.is_file():
+                    continue
+                if entry.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+                    continue
+                try:
+                    mtime = entry.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                if entry.stem.lower() == "background":
+                    background = {"filename": entry.name, "mtime": mtime}
+                    continue
+                parsed = self._parse_capture_timestamp(entry.stem)
+                if parsed is None:
+                    continue
+                rows.append(
+                    (
+                        parsed,
+                        entry.name,
+                        parsed.isoformat().replace("+00:00", "Z"),
+                        parsed.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                        mtime,
+                    )
+                )
+            except OSError:
+                continue
+
+        # Newest capture first so the dropdown and "last capture" reflect recency.
+        rows.sort(key=lambda row: row[0], reverse=True)
+        captures = [
+            {"filename": name, "iso": iso, "label": label, "mtime": mtime}
+            for (_, name, iso, label, mtime) in rows
+        ]
+        return {
+            "captures": captures,
+            "latest": captures[0] if captures else None,
+            "background": background,
+            "count": len(captures),
+        }
 
     def _render_dashboard(self, status: dict[str, Any]) -> str:
         config_json = json.dumps(self._load_config_dict(mask_sensitive=True), ensure_ascii=True, indent=2)

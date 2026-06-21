@@ -86,34 +86,37 @@ class CameraService:
             LOGGER.error("Unable to create image directory for %s: %s", output_path_str, exc)
             return ""
 
-        manager = mp.Manager()
-        return_dict: dict[str, Any] = manager.dict()
+        # Use the Manager as a context manager so its helper process is always
+        # shut down — otherwise every capture leaks a manager process, which adds
+        # up over a month-long deployment.
+        with mp.Manager() as manager:
+            return_dict: dict[str, Any] = manager.dict()
 
-        process = mp.Process(
-            target=_capture_worker,
-            args=(output_path_str, warmup_seconds, return_dict),
-        )
+            process = mp.Process(
+                target=_capture_worker,
+                args=(output_path_str, warmup_seconds, return_dict),
+            )
 
-        if led is not None:
-            led.on()
-        try:
-            process.start()
-            process.join(timeout_seconds + warmup_seconds)
-
-            if process.is_alive():
-                LOGGER.error("Camera capture timed out for %s", output_path_str)
-                process.terminate()
-                process.join()
-                return ""
-        finally:
             if led is not None:
-                led.off()
+                led.on()
+            try:
+                process.start()
+                process.join(timeout_seconds + warmup_seconds)
 
-        if return_dict.get("success"):
-            return output_path_str
+                if process.is_alive():
+                    LOGGER.error("Camera capture timed out for %s", output_path_str)
+                    process.terminate()
+                    process.join()
+                    return ""
+            finally:
+                if led is not None:
+                    led.off()
 
-        LOGGER.error("Camera capture failed: %s", return_dict.get("error", "unknown error"))
-        return ""
+            if return_dict.get("success"):
+                return output_path_str
+
+            LOGGER.error("Camera capture failed: %s", return_dict.get("error", "unknown error"))
+            return ""
 
 
 class PlantImageProcessor:

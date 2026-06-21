@@ -10,6 +10,7 @@ WorkingDirectory=/opt/phenohive
 EnvironmentFile=/opt/phenohive/.env
 ExecStartPre=/bin/bash /opt/phenohive/scripts/wait_for_network.sh
 ExecStartPre=-/bin/bash /opt/phenohive/scripts/update_config.sh
+ExecStartPre=/bin/bash /opt/phenohive/scripts/i2c_bus_recovery.sh
 ExecStart=/opt/phenohive/.venv/bin/python main.py
 Restart=always
 RestartSec=10

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -41,33 +42,99 @@ class DataManager:
         self._influx_client: Any | None = None
         self._write_api: Any | None = None
 
+        # Serialise all persistence so the main publish loop and the background
+        # camera-capture thread cannot interleave CSV/Influx/queue writes.
+        self._lock = threading.Lock()
+
     def persist_and_send(self, record: dict[str, Any]) -> None:
         """Always write to CSV, then try sending upstream."""
-        self._append_to_csv(record)
+        with self._lock:
+            self._append_to_csv(record)
 
-        if not self._influx_enabled:
-            return
+            if not self._influx_enabled:
+                return
 
-        sent = self._send_record(record)
-        if sent:
-            self._flush_offline_queue()
-        else:
-            self._append_to_offline_queue(record)
+            sent = self._send_record(record)
+            if sent:
+                self._flush_offline_queue()
+            else:
+                self._append_to_offline_queue(record)
 
     def _append_to_csv(self, record: dict[str, Any]) -> None:
-        """Append one record to the local CSV file."""
+        """Append one record to the local CSV, keeping a single stable header.
+
+        The header is the union of every key ever written. Records produced by
+        the station do not all share the same schema — the camera thread writes
+        ``vision_*`` records, calibration fields appear only periodically, and a
+        failed sensor drops its fields for that cycle. A naive per-row header
+        therefore drifts out of alignment and silently corrupts the archive.
+
+        To prevent that, when a record introduces a previously unseen key the
+        file is rewritten (atomically, via a temp file) with the expanded header
+        and the existing rows back-filled with empty values. In steady state
+        (no new keys) this is a plain append, so the common path stays cheap.
+        """
         try:
             record_with_timestamp = dict(record)
             record_with_timestamp.setdefault("timestamp", datetime.now(UTC).isoformat())
-            file_exists = self._csv_path.exists()
 
-            with self._csv_path.open("a", newline="", encoding="utf-8") as csv_file:
-                writer = csv.DictWriter(csv_file, fieldnames=sorted(record_with_timestamp.keys()))
-                if not file_exists or self._csv_path.stat().st_size == 0:
-                    writer.writeheader()
-                writer.writerow(record_with_timestamp)
+            existing_fieldnames = self._read_csv_header()
+            if existing_fieldnames is None:
+                fieldnames = self._ordered_fieldnames(record_with_timestamp.keys())
+                self._write_csv_rows(fieldnames, [record_with_timestamp], mode="w")
+                return
+
+            new_keys = [key for key in record_with_timestamp if key not in existing_fieldnames]
+            if new_keys:
+                fieldnames = existing_fieldnames + sorted(new_keys)
+                self._rewrite_csv_with_fieldnames(fieldnames)
+                self._write_csv_rows(fieldnames, [record_with_timestamp], mode="a")
+            else:
+                self._write_csv_rows(existing_fieldnames, [record_with_timestamp], mode="a")
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to write CSV record: %s", exc)
+
+    @staticmethod
+    def _ordered_fieldnames(keys: Any) -> list[str]:
+        """Return fieldnames with ``timestamp`` first, then the rest sorted."""
+        keys = list(keys)
+        rest = sorted(key for key in keys if key != "timestamp")
+        return (["timestamp"] if "timestamp" in keys else []) + rest
+
+    def _read_csv_header(self) -> list[str] | None:
+        """Return the current CSV header, or None if the file is empty/missing."""
+        if not self._csv_path.exists() or self._csv_path.stat().st_size == 0:
+            return None
+        with self._csv_path.open("r", newline="", encoding="utf-8") as csv_file:
+            reader = csv.reader(csv_file)
+            try:
+                return next(reader)
+            except StopIteration:
+                return None
+
+    def _write_csv_rows(self, fieldnames: list[str], rows: list[dict[str, Any]], mode: str) -> None:
+        """Write rows aligned to ``fieldnames``; missing keys become empty cells."""
+        with self._csv_path.open(mode, newline="", encoding="utf-8") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=fieldnames, extrasaction="ignore", restval="")
+            if mode == "w":
+                writer.writeheader()
+            writer.writerows(rows)
+
+    def _rewrite_csv_with_fieldnames(self, fieldnames: list[str]) -> None:
+        """Rewrite the CSV under an expanded header, back-filling existing rows.
+
+        Uses a temp file plus an atomic replace so an interruption mid-rewrite
+        can never truncate or half-write the authoritative archive.
+        """
+        with self._csv_path.open("r", newline="", encoding="utf-8") as csv_file:
+            existing_rows = list(csv.DictReader(csv_file))
+
+        tmp_path = self._csv_path.with_name(self._csv_path.name + ".tmp")
+        with tmp_path.open("w", newline="", encoding="utf-8") as tmp_file:
+            writer = csv.DictWriter(tmp_file, fieldnames=fieldnames, extrasaction="ignore", restval="")
+            writer.writeheader()
+            writer.writerows(existing_rows)
+        tmp_path.replace(self._csv_path)
 
     def _append_to_offline_queue(self, record: dict[str, Any]) -> None:
         """Append failed records to a JSONL queue."""

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from importlib import import_module
 from typing import Any
 
-from .base_sensor import BaseSensor
+from .base_sensor import BaseSensor, SensorStatus
 
 LOGGER = logging.getLogger(__name__)
 
@@ -33,25 +33,22 @@ class RealTCS3448(BaseSensor):
         self._channel_scaling = channel_scaling or {}
         self._channel_offsets = channel_offsets or {}
         self._bus: Any | None = None
+        self._avalid_miss: int = 0  # consecutive reads where AVALID=0
 
     # ------------------------------------------------------------------
-    # Raw I2C helpers (use I2C_RDWR, not I2C_SMBUS — the TCS3408 does
-    # not respond correctly to the SMBus ioctl on BCM2835).
+    # Register helpers — use SMBus ioctls (read_byte_data / write_byte_data /
+    # write_i2c_block_data) for all single-register and short-block access.
+    # SMBus ioctls are reliable on BCM2835; I2C_RDWR is reserved for the
+    # 38-byte bulk read in read_data() which exceeds the SMBus block limit.
     # ------------------------------------------------------------------
     def _i2c_read_reg(self, reg: int) -> int:
-        import smbus2
-        w = smbus2.i2c_msg.write(self._i2c_address, [reg])
-        r = smbus2.i2c_msg.read(self._i2c_address, 1)
-        self._bus.i2c_rdwr(w, r)
-        return list(r)[0]
+        return self._bus.read_byte_data(self._i2c_address, reg)
 
     def _i2c_write_reg(self, reg: int, val: int) -> None:
-        import smbus2
-        self._bus.i2c_rdwr(smbus2.i2c_msg.write(self._i2c_address, [reg, val]))
+        self._bus.write_byte_data(self._i2c_address, reg, val)
 
     def _i2c_write_block(self, reg: int, data: list) -> None:
-        import smbus2
-        self._bus.i2c_rdwr(smbus2.i2c_msg.write(self._i2c_address, [reg] + data))
+        self._bus.write_i2c_block_data(self._i2c_address, reg, data)
 
     def _open_bus(self) -> None:
         """Close any stale bus handle and open a fresh one."""
@@ -68,16 +65,10 @@ class RealTCS3448(BaseSensor):
         """Run the full TCS3448 hardware initialisation (raises on failure)."""
         import time
 
-        # Blind power-off then power-on: recovers the chip if a previous process was
-        # killed mid-SMUX, or if the recovery script already powered it off.
-        # Register 0xBF (bank select) is only accessible when PON=1.
-        try:
-            self._i2c_write_reg(0x80, 0x00)
-            time.sleep(0.05)
-            self._i2c_write_reg(0x80, 0x01)
-            time.sleep(0.05)
-        except OSError:
-            pass
+        # The recovery script (i2c_bus_recovery.sh) powers the chip on (PON=1)
+        # before Python starts and probes both sensors to prime the BCM2835 BSC.
+        # We go directly to step 1 — no warmup loop, no explicit power-on here.
+        # PON=1 is required for register 0xBF (bank-select) to accept writes.
 
         # 1. Bank 1 access
         cfg_0 = self._i2c_read_reg(0xBF)
@@ -132,7 +123,12 @@ class RealTCS3448(BaseSensor):
         self._i2c_write_reg(0xAF, 0x11)  # Execute SMUX
         time.sleep(0.05)
 
-        # 10. Enable WEN, ALS_EN, PON and Auto SMUX
+        # 10. Enable WEN, ALS_EN, PON and AUTO_SMUX.
+        # CFG6=0x60 is required: the TCS3448 can only measure ~6 channels per
+        # ALS integration cycle.  AUTO_SMUX cycles through 3 SMUX configurations
+        # (scans 1–3) so all 14 channels are captured across successive scans
+        # and stored in the 38-byte output block at 0x93.  Without it only the
+        # first 6 channels (fz, fy, fxl, nir, 2x_vis_1, fd_1) are populated.
         self._i2c_write_reg(0x80, 0x0B)
         self._i2c_write_reg(0xD6, 0x60)
 
@@ -148,20 +144,19 @@ class RealTCS3448(BaseSensor):
     def setup(self) -> bool:
         """Initialize the custom TCS3448 sequence."""
         import time
-        # Two attempts: on the first I2C-level error (EIO/EREMOTEIO) reopen the
-        # bus and wait for the I2C controller to recover before trying again.
         for attempt in range(2):
             try:
                 self._open_bus()
                 if attempt > 0:
-                    time.sleep(1.0)
+                    time.sleep(0.5)
                 self._run_init_sequence()
+                self._avalid_miss = 0
                 self.mark_ready()
                 LOGGER.info("TCS3448 14-Channel initialization complete at 0x%02X (attempt %d)", self._i2c_address, attempt + 1)
                 return True
             except OSError as exc:
-                if attempt == 0 and getattr(exc, "errno", None) in (5, 121):
-                    LOGGER.warning("TCS3448 I2C error on first attempt (%s), reopening bus and retrying", exc)
+                if attempt == 0:
+                    LOGGER.warning("TCS3448 setup failed on first attempt (%s), retrying", exc)
                     continue
                 msg = f"TCS3448 setup failed: {exc}"
                 self.mark_error(msg)
@@ -177,6 +172,8 @@ class RealTCS3448(BaseSensor):
     def read_data(self) -> dict[str, Any]:
         """Read 14-channel spectral sample."""
         timestamp = datetime.now(UTC).isoformat()
+        if self.status != SensorStatus.READY:
+            return {"sensor": self.name, "timestamp": timestamp, "status": self.status.value, "error": self.last_error}
         if self._bus is None:
             msg = "TCS3448 read attempted before successful setup"
             self.mark_error(msg)
@@ -186,13 +183,29 @@ class RealTCS3448(BaseSensor):
         try:
             import smbus2
 
-            # Check status2 (0x90) for AVALID (0x40)
-            status2 = self._i2c_read_reg(0x90)
+            # Check AVALID via SMBus (reliable on BCM2835 unlike i2c_rdwr)
+            status2 = self._bus.read_byte_data(self._i2c_address, 0x90)
             if not (status2 & 0x40):
-                # Data not ready yet
+                self._avalid_miss += 1
+                # Only escalate if ENABLE itself is wrong — that means the chip has
+                # lost its AEN/PON state and needs a full reinit. Transient AVALID=0
+                # with correct ENABLE does not warrant recovery.
+                if self._avalid_miss >= 3:
+                    try:
+                        enable = self._bus.read_byte_data(self._i2c_address, 0x80)
+                    except OSError:
+                        enable = 0x00
+                    if enable != 0x0B:
+                        msg = (
+                            f"TCS3448 AVALID stuck low for {self._avalid_miss} reads "
+                            f"(ENABLE=0x{enable:02X}) — chip needs reinit"
+                        )
+                        self.mark_error(msg)
+                        LOGGER.warning(msg)
                 return {"sensor": self.name, "timestamp": timestamp, "status": self.status.value, "error": "Data not ready"}
 
-            # Read 38 bytes starting from STATUS (0x93)
+            # Bulk read of 38 bytes from 0x93 — i2c_rdwr is the only option here
+            # because the SMBus block-read protocol is limited to 32 bytes.
             write = smbus2.i2c_msg.write(self._i2c_address, [0x93])
             read = smbus2.i2c_msg.read(self._i2c_address, 38)
             self._bus.i2c_rdwr(write, read)
@@ -228,6 +241,7 @@ class RealTCS3448(BaseSensor):
                 scaled = val_no_dark * self._channel_scaling.get(ch, 1.0)
                 scaled_channels[ch] = scaled
 
+            self._avalid_miss = 0
             self.mark_ready()
             return {
                 "sensor": self.name,

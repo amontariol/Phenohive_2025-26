@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from importlib import import_module
 from typing import Any
 
-from .base_sensor import BaseSensor
+from .base_sensor import BaseSensor, SensorStatus
 
 LOGGER = logging.getLogger(__name__)
 
@@ -59,6 +59,8 @@ class RealSHT35(BaseSensor):
     def read_data(self) -> dict[str, Any]:
         """Read one temperature/humidity sample."""
         timestamp = datetime.now(UTC).isoformat()
+        if self.status != SensorStatus.READY:
+            return {"sensor": self.name, "timestamp": timestamp, "status": self.status.value, "error": self.last_error}
         if self._sensor is None:
             msg = "SHT35 read attempted before successful setup"
             self.mark_error(msg)

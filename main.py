@@ -14,6 +14,44 @@ from typing import Any, Callable
 
 import os
 
+# ── Restart / reboot escalation ─────────────────────────────────────────────
+# /run is a tmpfs cleared on every boot, so this counter resets automatically
+# after a successful hardware reboot and never accumulates across power cycles.
+_BOOT_FAILURE_COUNTER = Path("/run/phenohive_boot_failures")
+_MAX_RESTARTS_BEFORE_REBOOT = 3
+
+def _read_failure_count() -> int:
+    try:
+        return int(_BOOT_FAILURE_COUNTER.read_text().strip())
+    except Exception:
+        return 0
+
+def _increment_failure_counter() -> None:
+    _BOOT_FAILURE_COUNTER.write_text(str(_read_failure_count() + 1))
+
+def _clear_failure_counter() -> None:
+    _BOOT_FAILURE_COUNTER.unlink(missing_ok=True)
+
+def _exit_with_restart(logger: logging.Logger, sensor_key: str, error_min: float, threshold_min: float) -> None:
+    """Increment failure counter and exit. Escalates to system reboot if too many restarts."""
+    count = _read_failure_count()
+    _increment_failure_counter()
+    if count >= _MAX_RESTARTS_BEFORE_REBOOT:
+        logger.critical(
+            "Sensor %s has been in ERROR for %.1f min and the service has already restarted "
+            "%d time(s) without recovery — BCM2835 I2C bus likely stuck, triggering system reboot",
+            sensor_key, error_min, count,
+        )
+        os.system("systemctl reboot")  # noqa: S605 — intentional system control
+        os._exit(2)
+    logger.error(
+        "Sensor %s has been in ERROR for %.1f min (threshold %.0f min) — "
+        "triggering service restart (attempt %d/%d before reboot)",
+        sensor_key, error_min, threshold_min, count + 1, _MAX_RESTARTS_BEFORE_REBOOT,
+    )
+    os._exit(1)
+# ─────────────────────────────────────────────────────────────────────────────
+
 from src.core.config_manager import load_config
 from src.core.data_manager import DataManager
 from src.core.logger import setup_logger
@@ -714,6 +752,17 @@ def main() -> None:
         )
         debug_ui_service.start(host=debug_host, port=debug_port)
 
+    # Check if previous restarts have not resolved sensor failures.  If we have
+    # already restarted _MAX_RESTARTS_BEFORE_REBOOT times without sensors
+    # recovering, the BCM2835 I2C peripheral is likely permanently stuck and
+    # needs a hardware reboot to clear.  _exit_with_restart() handles this.
+    prior_failures = _read_failure_count()
+    if prior_failures > 0:
+        logger.warning(
+            "Service restart #%d/%d (failure counter from /run) — sensors may still be recovering",
+            prior_failures, _MAX_RESTARTS_BEFORE_REBOOT,
+        )
+
     setup_results = factory.setup_all(sensors)
     logger.info("Sensor setup results: %s", setup_results)
 
@@ -722,6 +771,16 @@ def main() -> None:
         if startup_retry:
             setup_results.update(startup_retry)
             logger.info("Sensor setup after startup retry: %s", startup_retry)
+
+    # All I2C sensors up → clear the failure counter so normal operation doesn't
+    # count towards the reboot threshold.
+    critical_sensors_up = all(
+        sensors[k].status == SensorStatus.READY
+        for k in ("sht35", "tcs3448")
+        if k in sensors
+    )
+    if critical_sensors_up:
+        _clear_failure_counter()
 
     data_manager = DataManager(
         csv_path=config.get_str("paths", "csv_path", fallback="data/measurements.csv") or "data/measurements.csv",
@@ -814,7 +873,7 @@ def main() -> None:
     max_recent_captures = 3
 
     sensor_retry_interval_s = max(30.0, config.get_float("sampling", "sensor_retry_interval_s", fallback=60.0))
-    sensor_failure_restart_min = max(5.0, config.get_float("sampling", "sensor_failure_restart_min", fallback=30.0))
+    sensor_failure_restart_min = max(5.0, config.get_float("sampling", "sensor_failure_restart_min", fallback=5.0))
     # Sensors that trigger a service restart if they stay broken beyond the threshold.
     # Scale is excluded: a missing weight is less critical than missing climate/light data.
     critical_sensors = frozenset(
@@ -838,7 +897,11 @@ def main() -> None:
             current_mono = time.monotonic()
 
             if current_mono >= next_sensor_retry_due:
-                retry_results = factory.retry_failed_sensors(sensors, max_retries=1, retry_delay_s=0.0)
+                # Capture which critical sensors were already in persistent error before retrying.
+                # If they still fail after the retry, the bus is stuck and we need a clean restart.
+                already_failing = {k for k in critical_sensors if k in sensor_error_since}
+
+                retry_results = factory.retry_failed_sensors(sensors, max_retries=3, retry_delay_s=2.0)
                 if retry_results:
                     setup_results.update(retry_results)
                     logger.info("Sensor recovery: %s", retry_results)
@@ -856,17 +919,21 @@ def main() -> None:
                             )
                         sensor_error_since.pop(key, None)
 
+                # Exit immediately if a critical sensor was already persistent-error and this
+                # retry still failed. The in-process recovery script cannot fix a fully-stuck
+                # BCM2835 BSC; a clean service restart (which runs i2c_bus_recovery.sh as
+                # ExecStartPre) is the correct recovery path.
+                for key in already_failing:
+                    if retry_results.get(key) is False:
+                        error_since = sensor_error_since.get(key, current_mono)
+                        _exit_with_restart(logger, key, (current_mono - error_since) / 60.0, sensor_failure_restart_min)
+
                 for key in critical_sensors:
                     error_start = sensor_error_since.get(key)
                     if error_start is not None:
                         error_min = (current_mono - error_start) / 60.0
                         if error_min >= sensor_failure_restart_min:
-                            logger.error(
-                                "Sensor %s has been in ERROR for %.1f min (threshold %.0f min) — "
-                                "triggering service restart via os._exit(1)",
-                                key, error_min, sensor_failure_restart_min,
-                            )
-                            os._exit(1)
+                            _exit_with_restart(logger, key, error_min, sensor_failure_restart_min)
 
                 next_sensor_retry_due = current_mono + sensor_retry_interval_s
 
@@ -932,38 +999,50 @@ def main() -> None:
 
                 # Capture image in background to avoid blocking the main loop (prevents dashboard blackout)
                 if should_capture:
-                    target_record = publish_record # Close over the current record
+                    # Snapshot the identity fields from the publish record. The capture
+                    # runs in a background thread and must NOT mutate publish_record:
+                    # the main thread is already persisting that same dict (and holds it
+                    # in recent_captures), so a concurrent update() would race the CSV
+                    # write. Default-argument binding freezes these per-iteration values.
+                    capture_ts = str(publish_record.get("timestamp", datetime.now(UTC).isoformat()))
+                    capture_station_id = publish_record.get("station_id")
+                    capture_hardware_uuid = publish_record.get("hardware_uuid")
 
-                    def _capture_task():
+                    def _capture_task(
+                        capture_ts: str = capture_ts,
+                        capture_station_id: Any = capture_station_id,
+                        capture_hardware_uuid: Any = capture_hardware_uuid,
+                        warmup_seconds: float = warmup_seconds,
+                        timeout_seconds: float = timeout_seconds,
+                    ) -> None:
                         nonlocal latest_vision_capture
                         try:
                             vision_payload = image_processor.capture_and_process(
                                 camera_service=camera_service,
                                 output_dir=image_output_dir,
-                                warmup_seconds=config.get_int("camera", "warmup_seconds", fallback=7),
-                                timeout_seconds=config.get_float("camera", "timeout_seconds", fallback=45.0),
+                                warmup_seconds=warmup_seconds,
+                                timeout_seconds=timeout_seconds,
                                 led=led_service,
                             )
-                            # Update the record in memory so the dashboard sees it on next poll
-                            target_record.update({f"vision_{k}": v for k, v in vision_payload.items()})
-                            # Keep the latest vision result permanently accessible for the dashboard
-                            latest_vision_capture = {
-                                "timestamp": target_record["timestamp"],
-                                **{f"vision_{k}": v for k, v in vision_payload.items()},
-                            }
+                            vision_fields = {f"vision_{k}": v for k, v in vision_payload.items()}
 
-                            # Construct and persist a dedicated vision record using the same timestamp and identity tags.
-                            # InfluxDB will automatically merge these fields into the existing measurement point.
+                            # Latest vision result for the dashboard — a fresh dict, not a
+                            # mutation of the already-persisted publish record.
+                            latest_vision_capture = {"timestamp": capture_ts, **vision_fields}
+
+                            # Persist the vision data as its own record sharing the same
+                            # timestamp and identity tags. InfluxDB merges these fields into
+                            # the existing measurement point; the CSV archive keeps a single
+                            # stable header across both the sensor and vision record shapes.
                             vision_record = {
-                                "timestamp": target_record["timestamp"],
-                                "station_id": target_record.get("station_id"),
-                                "hardware_uuid": target_record.get("hardware_uuid"),
+                                "timestamp": capture_ts,
+                                "station_id": capture_station_id,
+                                "hardware_uuid": capture_hardware_uuid,
+                                **vision_fields,
                             }
-                            vision_record.update({f"vision_{k}": v for k, v in vision_payload.items()})
                             data_manager.persist_and_send(vision_record)
                         except Exception as exc:
                             logger.exception("Background camera capture failed: %s", exc)
-
 
                     threading.Thread(target=_capture_task, daemon=True).start()
 

@@ -37,35 +37,50 @@ class SensorFactory:
         }
         return sensors
 
+    # Sensors that share the I2C bus must be set up one at a time; concurrent
+    # access from two threads causes the BCM2835 I2C controller to emit EIO
+    # during the other sensor's transaction even though the kernel serialises
+    # individual ioctl calls.  HX711 is GPIO-only so it runs in parallel.
+    _I2C_SETUP_ORDER = ("tcs3448", "sht35")  # TCS3448 first: its init is longer
+
     def setup_all(self, sensors: Dict[str, BaseSensor]) -> Dict[str, bool]:
-        """Run setup on every sensor concurrently with a safety timeout."""
+        """Run setup for sensors, serialising I2C bus sensors to avoid contention."""
         import concurrent.futures
+
         results: Dict[str, bool] = {key: False for key in sensors}
-        timeout_s = 15.0
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(sensors)) as executor:
-            future_to_key = {executor.submit(sensor.setup): key for key, sensor in sensors.items()}
-            
-            # Wait for completion with a global timeout
+        timeout_s = 30.0  # extended: I2C sensors now run sequentially
+
+        i2c_keys = [k for k in self._I2C_SETUP_ORDER if k in sensors]
+        other_keys = [k for k in sensors if k not in i2c_keys]
+
+        # Non-I2C sensors run in a background thread (they don't touch the bus)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(other_keys))) as executor:
+            other_futures = {executor.submit(sensors[k].setup): k for k in other_keys}
+
+            # I2C sensors run strictly sequentially on the calling thread
+            for key in i2c_keys:
+                try:
+                    results[key] = sensors[key].setup()
+                except Exception as exc:
+                    LOGGER.error("Setup failed for sensor %s: %s", key, exc)
+                    results[key] = False
+
             done, not_done = concurrent.futures.wait(
-                future_to_key.keys(), 
+                other_futures.keys(),
                 timeout=timeout_s,
-                return_when=concurrent.futures.ALL_COMPLETED
+                return_when=concurrent.futures.ALL_COMPLETED,
             )
-            
             for future in done:
-                key = future_to_key[future]
+                key = other_futures[future]
                 try:
                     results[key] = future.result()
                 except Exception as exc:
                     LOGGER.error("Setup failed for sensor %s: %s", key, exc)
                     results[key] = False
-            
             for future in not_done:
-                key = future_to_key[future]
+                key = other_futures[future]
                 LOGGER.error("Setup timed out after %ss for sensor %s", timeout_s, key)
                 results[key] = False
-                # Note: We can't easily kill the thread, but we allow the app to continue.
 
         return results
 
@@ -91,27 +106,45 @@ class SensorFactory:
             LOGGER.info("Running I2C bus recovery before retrying sensors: %s", failed_i2c)
             self._run_i2c_recovery()
 
+        # Retry I2C sensors in setup order (TCS3448 first) so that if TCS3448's
+        # failed init corrupts the bus, SHT35 doesn't exhaust retries on a broken
+        # bus before TCS3448 gets a chance to recover and clean it up.
+        i2c_retry_order = list(self._I2C_SETUP_ORDER) + [
+            k for k in sensors if k not in self._I2C_SETUP_ORDER
+        ]
         results: Dict[str, bool] = {}
-        for key, sensor in sensors.items():
-            if sensor.status == SensorStatus.READY:
+        for key in i2c_retry_order:
+            sensor = sensors.get(key)
+            if sensor is None or sensor.status == SensorStatus.READY:
                 continue
             i2c_info = self._i2c_addresses.get(key)
             if i2c_info is None:
                 continue
             bus, address = i2c_info
-            if not self._probe_i2c(bus, address):
+            probe_ok = self._probe_i2c(bus, address)
+            if not probe_ok:
+                # Probe can fail even for physically-present sensors when the bus is
+                # in a partially-broken state after a failed TCS3448 init sequence.
+                # Log the result but do not skip — let setup() decide if the sensor
+                # is truly absent.
                 LOGGER.warning(
-                    "Sensor %s in %s state; not detectable on I2C bus %d at 0x%02X — skipping retry",
+                    "Sensor %s in %s state; I2C probe failed at bus %d 0x%02X — retrying anyway",
                     key, sensor.status.value, bus, address,
                 )
-                continue
-            LOGGER.info(
-                "Sensor %s detected at I2C bus %d 0x%02X, retrying setup (max %d attempt(s))",
-                key, bus, address, max_retries,
-            )
+            else:
+                LOGGER.info(
+                    "Sensor %s detected at I2C bus %d 0x%02X, retrying setup (max %d attempt(s))",
+                    key, bus, address, max_retries,
+                )
             for attempt in range(1, max_retries + 1):
                 if attempt > 1:
-                    time.sleep(retry_delay_s)
+                    # A failed setup attempt can leave the bus in a bad state
+                    # (partial init write strands the BCM2835 I2C controller).
+                    # Re-run bus recovery before each subsequent attempt.
+                    LOGGER.info("Re-running I2C recovery before retry %d/%d for %s", attempt, max_retries, key)
+                    self._run_i2c_recovery()
+                    if retry_delay_s > 0:
+                        time.sleep(retry_delay_s)
                 if sensor.setup():
                     LOGGER.info("Sensor %s recovered on setup attempt %d/%d", key, attempt, max_retries)
                     results[key] = True
@@ -147,11 +180,15 @@ class SensorFactory:
 
     @staticmethod
     def _probe_i2c(bus: int, address: int) -> bool:
-        """Return True if a device ACKs at the given I2C address."""
+        """Return True if a device ACKs at the given I2C address.
+
+        Uses write_quick (same as i2cdetect) instead of read_byte because some
+        sensors (e.g. SHT35) NACK naked reads, causing false negatives.
+        """
         try:
             import smbus2
             with smbus2.SMBus(bus) as b:
-                b.read_byte(address)
+                b.write_quick(address)
             return True
         except OSError:
             return False
